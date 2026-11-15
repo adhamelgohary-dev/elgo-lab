@@ -1,0 +1,106 @@
+%PDF-1.4
+%“Œ‹ž ReportLab Generated PDF document (opensource)
+1 0 obj
+<<
+/F1 2 0 R /F2 3 0 R
+>>
+endobj
+2 0 obj
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
+endobj
+3 0 obj
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
+endobj
+4 0 obj
+<<
+/Contents 8 0 R /MediaBox [ 0 0 595 842 ] /Parent 7 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>> 
+  /Type /Page
+>>
+endobj
+5 0 obj
+<<
+/PageMode /UseNone /Pages 7 0 R /Type /Catalog
+>>
+endobj
+6 0 obj
+<<
+/Author (Elgo Lab) /CreationDate (D:20261115231029+02'00') /Creator (anonymous) /Keywords () /ModDate (D:20261115231029+02'00') /Producer (ReportLab PDF Library - \(opensource\)) 
+  /Subject (unspecified) /Title (Computing Foundations - Original Demo Notes) /Trapped /False
+>>
+endobj
+7 0 obj
+<<
+/Count 1 /Kids [ 4 0 R ] /Type /Pages
+>>
+endobj
+8 0 obj
+<<
+/Length 1517
+>>
+stream
+1 0 0 1 0 0 cm  BT /F1 12 Tf 14.4 TL ET
+.12549 .145098 .168627 rg
+n 0 650 595 192 re f*
+.960784 .682353 .447059 rg
+BT /F2 26 Tf 31.2 TL ET
+BT 1 0 0 1 48 770 Tm (Computing Foundations) Tj T* ET
+BT /F1 12 Tf 14.4 TL ET
+BT 1 0 0 1 48 740 Tm (Original open educational demo | Elgo Lab) Tj T* ET
+.12549 .145098 .168627 rg
+BT /F2 16 Tf 19.2 TL ET
+BT 1 0 0 1 48 600 Tm (Bits and bytes) Tj T* ET
+BT /F1 11 Tf 13.2 TL ET
+BT 1 0 0 1 48 572 Tm (A bit has two states: 0 and 1. A byte contains eight bits.) Tj T* ET
+BT 1 0 0 1 48 552 Tm (Binary 101 represents decimal 5: \(1 x 4\) + \(0 x 2\) + \(1 x 1\).) Tj T* ET
+BT /F2 16 Tf 19.2 TL ET
+BT 1 0 0 1 48 508 Tm (Boolean logic) Tj T* ET
+BT /F1 11 Tf 13.2 TL ET
+BT 1 0 0 1 48 480 Tm (AND produces 1 only when both inputs are 1.) Tj T* ET
+BT 1 0 0 1 48 460 Tm (NOT reverses a Boolean value: true becomes false.) Tj T* ET
+BT /F2 16 Tf 19.2 TL ET
+BT 1 0 0 1 48 416 Tm (Data and algorithms) Tj T* ET
+BT /F1 11 Tf 13.2 TL ET
+BT 1 0 0 1 48 388 Tm (A queue follows first in, first out.) Tj T* ET
+BT 1 0 0 1 48 368 Tm (Binary search repeatedly halves a sorted search range.) Tj T* ET
+BT /F2 16 Tf 19.2 TL ET
+BT 1 0 0 1 48 324 Tm (Try it yourself) Tj T* ET
+BT /F1 11 Tf 13.2 TL ET
+BT 1 0 0 1 48 296 Tm (What is 1 AND 0? Why does binary search need sorted data?) Tj T* ET
+BT 1 0 0 1 48 276 Tm (Open the demo quizzes to practice and read bilingual explanations.) Tj T* ET
+BT /F1 10 Tf 12 TL ET
+BT 1 0 0 1 48 60 Tm (Original synthetic material. MIT licensed. No university content.) Tj T* ET
+ 
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000061 00000 n 
+0000000102 00000 n 
+0000000209 00000 n 
+0000000321 00000 n 
+0000000514 00000 n 
+0000000582 00000 n 
+0000000877 00000 n 
+0000000936 00000 n 
+trailer
+<<
+/ID 
+[<e6dd3a9e160dc0d568938e670e3fae61><e6dd3a9e160dc0d568938e670e3fae61>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 6 0 R
+/Root 5 0 R
+/Size 9
+>>
+startxref
+2504
+%%EOF

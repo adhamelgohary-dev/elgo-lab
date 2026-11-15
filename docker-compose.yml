@@ -1,0 +1,19 @@
+services:
+  elgo-lab:
+    build: .
+    container_name: elgo-lab
+    restart: unless-stopped
+    ports:
+      - "4183:4183"
+    environment:
+      PORT: "4183"
+      HOST: "0.0.0.0"
+      ELGO_DATA_DIR: "/data"
+      ADMIN_PASSWORD_HASH: "${ADMIN_PASSWORD_HASH:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
+      TRUST_PROXY: "${TRUST_PROXY:-0}"
+    volumes:
+      - elgo_data:/data
+
+volumes:
+  elgo_data:

@@ -1,0 +1,357 @@
+{
+  "id": "demo-course",
+  "name": "Computing Foundations Demo",
+  "nameAr": "أساسيات الحوسبة — مادة تجريبية",
+  "description": "Original, openly licensed examples for exploring Elgo Lab.",
+  "order": 1,
+  "accent": "#F59B59",
+  "quizzes": [
+    {
+      "id": "quiz-1",
+      "title": "Computing essentials",
+      "questions": [
+        {
+          "id": "demo-quiz-1-1",
+          "internalId": "demo-course::quiz::quiz-1::demo-quiz-1-1",
+          "question": "How many distinct values can one bit represent?",
+          "options": [
+            {
+              "id": "A",
+              "text": "2"
+            },
+            {
+              "id": "B",
+              "text": "4"
+            },
+            {
+              "id": "C",
+              "text": "8"
+            },
+            {
+              "id": "D",
+              "text": "16"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "A bit has two possible states: 0 and 1.",
+          "explanationArabic": "البت له حالتان: صفر أو واحد.",
+          "image": "/content/images/bit-states.svg"
+        },
+        {
+          "id": "demo-quiz-1-2",
+          "internalId": "demo-course::quiz::quiz-1::demo-quiz-1-2",
+          "question": "Which binary number represents decimal five?",
+          "options": [
+            {
+              "id": "A",
+              "text": "101"
+            },
+            {
+              "id": "B",
+              "text": "100"
+            },
+            {
+              "id": "C",
+              "text": "110"
+            },
+            {
+              "id": "D",
+              "text": "111"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "101 equals 4 + 0 + 1.",
+          "explanationArabic": "١٠١ في النظام الثنائي تساوي ٤ + ٠ + ١."
+        },
+        {
+          "id": "demo-quiz-1-3",
+          "internalId": "demo-course::quiz::quiz-1::demo-quiz-1-3",
+          "question": "What is the result of 1 AND 0?",
+          "options": [
+            {
+              "id": "A",
+              "text": "1"
+            },
+            {
+              "id": "B",
+              "text": "0"
+            },
+            {
+              "id": "C",
+              "text": "2"
+            },
+            {
+              "id": "D",
+              "text": "Undefined"
+            }
+          ],
+          "correctOptionId": "B",
+          "explanation": "AND is 1 only when both inputs are 1.",
+          "explanationArabic": "AND تساوي واحد فقط عندما يكون المدخلان واحداً."
+        },
+        {
+          "id": "demo-quiz-1-4",
+          "internalId": "demo-course::quiz::quiz-1::demo-quiz-1-4",
+          "question": "Which structure uses first in, first out?",
+          "options": [
+            {
+              "id": "A",
+              "text": "Stack"
+            },
+            {
+              "id": "B",
+              "text": "Queue"
+            },
+            {
+              "id": "C",
+              "text": "Tree"
+            },
+            {
+              "id": "D",
+              "text": "Set"
+            }
+          ],
+          "correctOptionId": "B",
+          "explanation": "A queue removes the earliest inserted item first.",
+          "explanationArabic": "الطابور يخرج العنصر الذي دخل أولاً."
+        },
+        {
+          "id": "demo-quiz-1-5",
+          "internalId": "demo-course::quiz::quiz-1::demo-quiz-1-5",
+          "question": "What does a loop do?",
+          "options": [
+            {
+              "id": "A",
+              "text": "Repeats instructions"
+            },
+            {
+              "id": "B",
+              "text": "Deletes all data"
+            },
+            {
+              "id": "C",
+              "text": "Changes hardware"
+            },
+            {
+              "id": "D",
+              "text": "Always stops a program"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "A loop repeats a block while its iteration rule permits.",
+          "explanationArabic": "الحلقة تكرر مجموعة تعليمات وفق شرط التكرار."
+        },
+        {
+          "id": "demo-quiz-1-6",
+          "internalId": "demo-course::quiz::quiz-1::demo-quiz-1-6",
+          "question": "Which protocol commonly transfers web pages?",
+          "options": [
+            {
+              "id": "A",
+              "text": "HTTP"
+            },
+            {
+              "id": "B",
+              "text": "ARP"
+            },
+            {
+              "id": "C",
+              "text": "ICMP"
+            },
+            {
+              "id": "D",
+              "text": "DHCP"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "HTTP defines requests and responses for web resources.",
+          "explanationArabic": "HTTP ينظم طلبات موارد الويب والردود عليها."
+        }
+      ]
+    },
+    {
+      "id": "quiz-2",
+      "title": "Data and algorithms",
+      "questions": [
+        {
+          "id": "demo-quiz-2-1",
+          "internalId": "demo-course::quiz::quiz-2::demo-quiz-2-1",
+          "question": "What is the purpose of a primary key?",
+          "options": [
+            {
+              "id": "A",
+              "text": "Identify a row uniquely"
+            },
+            {
+              "id": "B",
+              "text": "Compress a table"
+            },
+            {
+              "id": "C",
+              "text": "Encrypt a column"
+            },
+            {
+              "id": "D",
+              "text": "Sort every query"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "A primary key uniquely identifies each row.",
+          "explanationArabic": "المفتاح الأساسي يميز كل صف بشكل فريد."
+        },
+        {
+          "id": "demo-quiz-2-2",
+          "internalId": "demo-course::quiz::quiz-2::demo-quiz-2-2",
+          "question": "Which unit normally contains eight bits?",
+          "options": [
+            {
+              "id": "A",
+              "text": "Byte"
+            },
+            {
+              "id": "B",
+              "text": "Nibble"
+            },
+            {
+              "id": "C",
+              "text": "Pixel"
+            },
+            {
+              "id": "D",
+              "text": "Packet"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "One byte is eight bits.",
+          "explanationArabic": "البايت يتكون عادةً من ثمانية بتات."
+        },
+        {
+          "id": "demo-quiz-2-3",
+          "internalId": "demo-course::quiz::quiz-2::demo-quiz-2-3",
+          "question": "What is a Boolean value?",
+          "options": [
+            {
+              "id": "A",
+              "text": "True or false"
+            },
+            {
+              "id": "B",
+              "text": "Any paragraph"
+            },
+            {
+              "id": "C",
+              "text": "Only a fraction"
+            },
+            {
+              "id": "D",
+              "text": "An image file"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "A Boolean represents one of two truth values.",
+          "explanationArabic": "القيمة المنطقية تكون صحيحة أو خاطئة."
+        },
+        {
+          "id": "demo-quiz-2-4",
+          "internalId": "demo-course::quiz::quiz-2::demo-quiz-2-4",
+          "question": "Which search requires sorted input?",
+          "options": [
+            {
+              "id": "A",
+              "text": "Binary search"
+            },
+            {
+              "id": "B",
+              "text": "Linear scan"
+            },
+            {
+              "id": "C",
+              "text": "Random sampling"
+            },
+            {
+              "id": "D",
+              "text": "Full traversal"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "Binary search discards half of a sorted range each step.",
+          "explanationArabic": "البحث الثنائي يستبعد نصف المجال المرتب في كل خطوة."
+        }
+      ]
+    }
+  ],
+  "lectures": [
+    {
+      "id": "lecture-1",
+      "title": "Bits, logic and algorithms",
+      "guide": {
+        "en": "Understand bits and follow a simple algorithm.",
+        "ar": "افهم البتات واتبع خوارزمية بسيطة."
+      },
+      "generatedQuiz": {
+        "questions": [
+          {
+            "id": "demo-lecture-1-1",
+            "internalId": "demo-course::lecture::lecture-1::demo-lecture-1-1",
+            "question": "What does NOT do to a Boolean input?",
+            "options": [
+              {
+                "id": "A",
+                "text": "Inverts it"
+              },
+              {
+                "id": "B",
+                "text": "Duplicates it"
+              },
+              {
+                "id": "C",
+                "text": "Stores it"
+              },
+              {
+                "id": "D",
+                "text": "Adds one byte"
+              }
+            ],
+            "correctOptionId": "A",
+            "explanation": "NOT turns true into false and false into true.",
+            "explanationArabic": "NOT تعكس القيمة المنطقية."
+          }
+        ]
+      }
+    }
+  ],
+  "sheets": [
+    {
+      "id": "sheet-1",
+      "title": "Quick review",
+      "questions": [
+        {
+          "id": "demo-sheet-1-1",
+          "internalId": "demo-course::sheet::sheet-1::demo-sheet-1-1",
+          "question": "What does an algorithm describe?",
+          "options": [
+            {
+              "id": "A",
+              "text": "A sequence of steps"
+            },
+            {
+              "id": "B",
+              "text": "A monitor size"
+            },
+            {
+              "id": "C",
+              "text": "A file extension"
+            },
+            {
+              "id": "D",
+              "text": "A password length"
+            }
+          ],
+          "correctOptionId": "A",
+          "explanation": "An algorithm is a defined sequence of steps for solving a task.",
+          "explanationArabic": "الخوارزمية مجموعة خطوات محددة لحل مهمة."
+        }
+      ]
+    }
+  ]
+}

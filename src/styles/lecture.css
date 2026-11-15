@@ -1,0 +1,416 @@
+/* Unified Standalone Lecture Pages (Supports both Semantic <section> & .lecture-doc Summary Markup) */
+
+.lecture-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px clamp(14px, 4vw, 36px);
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.lecture-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lec-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 13px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: var(--tile);
+  color: var(--ink);
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.lec-btn.primary,
+.lec-btn-primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--on-accent);
+}
+
+.lecture-main {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 24px clamp(14px, 4vw, 32px) 64px;
+  position: relative;
+  z-index: 1;
+}
+
+.lecture-article {
+  background: var(--paper);
+  border: 1px solid var(--card-edge);
+  border-radius: 20px;
+  padding: clamp(20px, 4vw, 36px);
+  box-shadow: var(--shadow-card);
+  display: grid;
+  gap: 24px;
+}
+
+.lecture-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.lecture-breadcrumb a {
+  text-decoration: none;
+  font-weight: 600;
+  color: var(--accent-text);
+}
+
+.lecture-breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.lecture-header {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.lecture-eyebrow {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+.lecture-header h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.55rem, 3.2vw, 2.2rem);
+  line-height: 1.18;
+  letter-spacing: -0.03em;
+}
+
+.lecture-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.lecture-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--tile);
+  border: 1px solid var(--line);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.lecture-doc {
+  display: grid;
+  gap: 20px;
+}
+
+.doc-header-banner {
+  padding: 16px 20px;
+  border-radius: 16px;
+  background: linear-gradient(180deg, var(--card-top), var(--card-bottom));
+  border: 1px solid var(--card-edge);
+  border-inline-start: 4px solid var(--accent);
+  display: grid;
+  gap: 6px;
+}
+
+.doc-header-banner h2 {
+  margin: 0;
+  font-size: 1.28rem;
+  border: 0;
+  padding: 0;
+}
+
+.doc-header-banner .text-muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.badge-subject {
+  background: var(--accent-tint);
+  color: var(--accent-text);
+  border: 1px solid var(--accent-border);
+}
+
+.lecture-article > section,
+.summary-section {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: var(--lec-surface);
+  border: 1px solid var(--border-subtle);
+}
+
+.lecture-article h2,
+.summary-section h2 {
+  margin: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 1.24rem;
+  color: var(--accent-text);
+  letter-spacing: -0.02em;
+}
+
+.lecture-article h3,
+.summary-section h3 {
+  margin: 8px 0 2px;
+  font-size: 1.04rem;
+  color: var(--ink);
+}
+
+.lecture-article h4,
+.summary-section h4 {
+  margin: 6px 0 2px;
+  font-size: 0.96rem;
+  color: var(--ink);
+}
+
+.lecture-article p,
+.summary-section p {
+  margin: 0;
+  line-height: 1.72;
+}
+
+.lecture-article ul,
+.lecture-article ol,
+.summary-list,
+.clean-list {
+  margin: 0;
+  padding-inline-start: 22px;
+  display: grid;
+  gap: 7px;
+  line-height: 1.68;
+}
+
+.clean-list {
+  list-style: none;
+  padding-inline-start: 0;
+}
+
+.lecture-article code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--lec-code-bg);
+  padding: 2px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border-subtle);
+}
+
+.lecture-article pre,
+.formula-box {
+  margin: 4px 0;
+  padding: 13px 16px;
+  border-radius: 12px;
+  background: var(--lec-formula-bg);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  line-height: 1.65;
+  overflow-x: auto;
+}
+
+.formula-box strong,
+.def-title {
+  color: var(--accent-text);
+}
+
+.def-box {
+  padding: 14px 16px;
+  border-radius: 13px;
+  background: var(--tile);
+  border: 1px solid var(--line);
+  border-inline-start: 4px solid var(--accent);
+  display: grid;
+  gap: 6px;
+}
+
+.def-title {
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.lec-callout,
+.note-box {
+  padding: 13px 16px;
+  border-radius: 13px;
+  background: var(--lec-callout-bg);
+  border: 1px solid var(--accent-border);
+  border-inline-start: 4px solid var(--accent);
+  line-height: 1.68;
+}
+
+.lec-callout.warn {
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+  border-inline-start-color: var(--warning);
+}
+
+.lecture-article [dir="rtl"],
+.bilingual-block,
+.arabic-block {
+  direction: rtl;
+  text-align: right;
+  padding: 14px 17px;
+  border-radius: 13px;
+  background: var(--lec-ar-bg);
+  border: 1px solid var(--border-subtle);
+  border-inline-start: 4px solid var(--accent);
+  line-height: 1.85;
+  font-size: 0.96rem;
+}
+
+.lecture-table-wrap,
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.lecture-article table,
+.summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.lecture-article th,
+.lecture-article td,
+.summary-table th,
+.summary-table td {
+  padding: 10px 13px;
+  text-align: start;
+  border-bottom: 1px solid var(--border-subtle);
+  vertical-align: top;
+  line-height: 1.55;
+}
+
+.lecture-article th,
+.summary-table th {
+  background: var(--sage);
+  font-weight: 800;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+}
+
+.lecture-article tr:last-child td,
+.summary-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.lec-figure {
+  margin: 6px 0;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--lec-fig-bg);
+  display: grid;
+  gap: 10px;
+}
+
+.lec-figure figcaption {
+  font-size: 0.84rem;
+  color: var(--muted);
+  text-align: center;
+}
+
+.lec-svg {
+  width: 100%;
+  height: auto;
+  max-height: 360px;
+  display: block;
+}
+
+.lec-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.lecture-footer {
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lec-quiz-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.lec-quiz-btn:hover {
+  opacity: 0.92;
+}
+
+.text-muted {
+  color: var(--muted);
+}
+
+@media (max-width: 680px) {
+  .lecture-main {
+    padding: 14px 12px 48px;
+  }
+  .lecture-article {
+    padding: 16px 14px;
+    border-radius: 16px;
+    gap: 16px;
+  }
+  .lecture-article > section,
+  .summary-section {
+    padding: 14px;
+    border-radius: 13px;
+  }
+  .lec-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}

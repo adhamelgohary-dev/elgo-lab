@@ -1,0 +1,29 @@
+{
+  "name": "elgo-lab",
+  "version": "2.0.0",
+  "description": "Open-source zero-dependency interactive CS learning hub with MCQ practice, ranked exams, bilingual EN/AR explanations, lecture guides, PDFs, videos, and Cloudflare Pages + D1/R2 backend.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "node tools/dev-server.js",
+    "start": "node tools/node-server.js",
+    "build": "node tools/build.js",
+    "build:key": "node tools/build-answer-key.js",
+    "check": "node tools/predeploy-check.js",
+    "test": "node --test tests/*.test.js",
+    "admin:password": "node tools/admin-password.js"
+  },
+  "keywords": [
+    "computer-science",
+    "education",
+    "mcq",
+    "quiz-platform",
+    "study-hub",
+    "bilingual",
+    "cloudflare-pages",
+    "d1",
+    "vanilla-js"
+  ]
+}

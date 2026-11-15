@@ -1,0 +1,164 @@
+/* Elgo Lab — Canonical Design Tokens (Daylight & Evening Graphite + Calibrated Copper/Tangerine) */
+
+:root,
+:root[data-theme="daylight"],
+html[data-theme="daylight"] {
+  color-scheme: light;
+
+  /* Core Canvas & Elevated Surfaces */
+  --bg: #DFDED8;
+  --paper: #F4F2ED;
+  --raised: #ECE9E1;
+  --tile: #F8F6F1;
+  --tile-border: #D4CFC5;
+  --sage: #E6E3DC;
+
+  /* Typography */
+  --ink: #292C30;
+  --muted: #54585F;
+  --text: var(--ink);
+  --text-secondary: var(--muted);
+  --text-muted: var(--muted);
+
+  /* Lines & Borders */
+  --line: #B5B8B0;
+  --line-strong: #9DA198;
+  --border: var(--line);
+  --border-subtle: rgba(41, 44, 48, 0.12);
+
+  /* Tactile 3D Card Finish */
+  --card-top: #F6F4EF;
+  --card-bottom: #EDEAE3;
+  --card-edge: #B8BBB3;
+  --card-shadow: #C4C6BE;
+  --finish-shadow: #B8BBB3;
+  --finish-glint: #ffffffaa;
+  --finish-drop: rgba(41, 44, 48, 0.086);
+  --finish-tint: rgba(245, 155, 89, 0.14);
+  --shadow-card: inset 1px 2px 2px var(--finish-glint), inset -3px -5px 9px rgba(53, 65, 42, 0.047), 0 6px 0 var(--finish-shadow), 0 12px 20px var(--finish-drop);
+
+  /* Calibrated Copper / Tangerine Accent */
+  --deep: #9E4710;
+  --accent: #9C440C;
+  --accent-strong: #9E4710;
+  --accent-warm: #F59B59;
+  --accent-text: #9C440C;
+  --emblem: #F59B59;
+  --emblem-ink: #292C30;
+  --on-accent: #FFFFFF;
+  --on-warm: #292C30;
+  --selected: #9E4710;
+  --on-selected: #FFFFFF;
+  --accent-tint: rgba(158, 71, 16, 0.10);
+  --accent-border: rgba(158, 71, 16, 0.34);
+
+  /* Semantic Aliases */
+  --surface: var(--bg);
+  --surface-card: var(--paper);
+  --surface-muted: var(--raised);
+  --surface-elevated: var(--raised);
+
+  /* Status Colors */
+  --success: #2C6B46;
+  --success-bg: rgba(44, 107, 70, 0.11);
+  --success-border: rgba(44, 107, 70, 0.38);
+  --danger: #B33A2E;
+  --danger-bg: rgba(179, 58, 46, 0.11);
+  --danger-border: rgba(179, 58, 46, 0.38);
+  --warning: #9A5508;
+  --warning-bg: rgba(154, 85, 8, 0.11);
+  --warning-border: rgba(154, 85, 8, 0.38);
+
+  /* Botanical Garden Silhouettes */
+  --tree-light: #728568;
+  --tree-mid: #53644B;
+  --trunk: #5D4E42;
+
+  /* Lecture Document Tokens */
+  --lec-surface: #FFFFFF;
+  --lec-ar-bg: #F4EFE6;
+  --lec-code-bg: #ECE7DD;
+  --lec-callout-bg: #F5EFE6;
+  --lec-formula-bg: #F8F5EE;
+  --lec-fig-bg: #FDFCF9;
+
+  /* Typography & Motion */
+  --font-sans: "Plus Jakarta Sans", "IBM Plex Sans Arabic", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius-card: 18px;
+  --radius-btn: 12px;
+  --t-fast: 150ms;
+  --ease: cubic-bezier(.22, .68, .35, 1);
+}
+
+html[data-theme="evening"] {
+  color-scheme: dark;
+
+  --bg: #191A1C;
+  --paper: #2B2D31;
+  --raised: #2E3035;
+  --tile: #232529;
+  --tile-border: #454850;
+  --sage: #35383E;
+
+  --ink: #F5F3EE;
+  --muted: #C6C8CA;
+  --text: var(--ink);
+  --text-secondary: var(--muted);
+  --text-muted: var(--muted);
+
+  --line: #42454C;
+  --line-strong: #555962;
+  --border: var(--line);
+  --border-subtle: rgba(255, 255, 255, 0.09);
+
+  --card-top: #2F3136;
+  --card-bottom: #27292D;
+  --card-edge: #3F424A;
+  --card-shadow: #101113;
+  --finish-shadow: #101113;
+  --finish-glint: #ffffff1a;
+  --finish-drop: rgba(0, 0, 0, 0.376);
+  --finish-tint: rgba(245, 155, 89, 0.094);
+  --shadow-card: inset 1px 2px 2px var(--finish-glint), inset -3px -5px 9px rgba(0, 0, 0, 0.22), 0 6px 0 var(--finish-shadow), 0 12px 20px var(--finish-drop);
+
+  --deep: #F59B59;
+  --accent: #F59B59;
+  --accent-strong: #F59B59;
+  --accent-warm: #F59B59;
+  --accent-text: #F59B59;
+  --emblem: #F59B59;
+  --emblem-ink: #191A1C;
+  --on-accent: #191A1C;
+  --on-warm: #191A1C;
+  --selected: #F59B59;
+  --on-selected: #191A1C;
+  --accent-tint: rgba(245, 155, 89, 0.14);
+  --accent-border: rgba(245, 155, 89, 0.36);
+
+  --surface: var(--bg);
+  --surface-card: var(--paper);
+  --surface-muted: var(--raised);
+  --surface-elevated: var(--raised);
+
+  --success: #53B97D;
+  --success-bg: rgba(83, 185, 125, 0.13);
+  --success-border: rgba(83, 185, 125, 0.38);
+  --danger: #E8766A;
+  --danger-bg: rgba(232, 118, 106, 0.14);
+  --danger-border: rgba(232, 118, 106, 0.4);
+  --warning: #F5BA62;
+  --warning-bg: rgba(245, 186, 98, 0.14);
+  --warning-border: rgba(245, 186, 98, 0.38);
+
+  --tree-light: #35383E;
+  --tree-mid: #2C2F34;
+  --trunk: #232529;
+
+  --lec-surface: #232529;
+  --lec-ar-bg: #26292E;
+  --lec-code-bg: #1B1D20;
+  --lec-callout-bg: #2A2C32;
+  --lec-formula-bg: #1F2125;
+  --lec-fig-bg: #202226;
+}

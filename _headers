@@ -1,0 +1,42 @@
+# Cloudflare Pages headers (published from public/ — built by tools/build.js)
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob:; frame-src 'self' blob: https://www.youtube-nocookie.com; connect-src 'self'; font-src 'self'; object-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'
+
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/learn/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/src/*.css
+  Cache-Control: public, max-age=0, must-revalidate
+
+/src/*.js
+  Cache-Control: public, max-age=0, must-revalidate
+
+/data/*
+  Cache-Control: public, max-age=0, must-revalidate
+
+/content/pdfs/*
+  Cache-Control: public, max-age=86400
+
+/icons/*
+  Cache-Control: public, max-age=604800
+
+/assets/*
+  Cache-Control: public, max-age=604800
+
+/api/*
+  Cache-Control: no-store
+
+/sw.js
+  Cache-Control: no-cache, no-store, must-revalidate

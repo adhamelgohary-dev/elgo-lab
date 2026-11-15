@@ -1,0 +1,9 @@
+[
+  {
+    "id": "demo-notes",
+    "subjectId": "demo-course",
+    "title": "Computing foundations - original sample notes",
+    "path": "content/pdfs/demo-notes.pdf",
+    "active": true
+  }
+]

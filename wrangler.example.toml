@@ -1,0 +1,23 @@
+name = "elgo-lab"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = "public"
+
+# Create your Cloudflare D1 database:
+#   npx wrangler d1 create elgo_lab_db
+# Apply migrations:
+#   npx wrangler d1 execute elgo_lab_db --remote --file backend/schema.sql
+[[d1_databases]]
+binding = "DB"
+database_name = "elgo_lab_db"
+database_id = "<YOUR_D1_DATABASE_ID>"
+migrations_dir = "backend/migrations"
+
+# Create your Cloudflare R2 bucket for uploaded PDFs:
+#   npx wrangler r2 bucket create elgo-lab-files
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "<YOUR_R2_BUCKET_NAME>"
+
+# Configure master admin password hash via Wrangler secret (never commit secrets):
+#   node tools/admin-password.js

@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr" data-theme="evening">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>elgo lab. — Study Hub &amp; Quiz Engine</title>
+  <meta name="description" content="Open-source learning platform with original demo content, bilingual explanations, lecture guides and ranked quizzes.">
+  <meta name="theme-color" content="#191A1C">
+  <meta property="og:title" content="elgo lab. — Study Hub">
+  <meta property="og:description" content="12 original demo questions, bilingual explanations, 1 lecture guide, and a sample PDF.">
+  <meta property="og:image" content="/content/images/bit-states.svg">
+  <meta property="og:type" content="website">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="/assets/mascot/mascot-logo.png">
+
+  <link rel="stylesheet" href="/src/styles/tokens.css">
+  <link rel="stylesheet" href="/src/styles/app.css">
+  <link rel="stylesheet" href="/src/styles/player.css">
+  <link rel="stylesheet" href="/src/styles/admin.css">
+
+  <script src="/src/app/theme.js"></script>
+</head>
+<body>
+  <div class="product" id="productRoot">
+    <!-- Botanical backdrop -->
+    <div class="garden" aria-hidden="true">
+      <svg class="botanical botanical-left" viewBox="0 0 320 700" fill="none">
+        <path class="botanical-stem" data-trunk d="M48 720C180 540 100 327 268 45M125 564 37 431M141 435 253 300M181 287 103 174"/>
+        <g class="botanical-leaf">
+          <path data-leaf d="M114 558C20 548-2 471 26 412c72 18 104 73 88 146Z"/>
+          <path data-mid d="M143 440c-11-99 45-158 125-159 11 80-36 143-125 159Z"/>
+          <path data-leaf d="M183 295C96 286 65 219 92 155c77 23 104 67 91 140Z"/>
+          <path data-mid d="M221 183c-2-81 46-125 98-117 3 63-31 106-98 117Z"/>
+        </g>
+        <path class="botanical-vein" d="m36 431 78 127m29-118 110-140m-70-5-80-121m118 9 79-99"/>
+      </svg>
+      <svg class="botanical botanical-right" viewBox="0 0 320 700" fill="none">
+        <path class="botanical-stem" data-trunk d="M48 720C180 540 100 327 268 45M125 564 37 431M141 435 253 300M181 287 103 174"/>
+        <g class="botanical-leaf">
+          <path data-mid d="M114 558C20 548-2 471 26 412c72 18 104 73 88 146Z"/>
+          <path data-leaf d="M143 440c-11-99 45-158 125-159 11 80-36 143-125 159Z"/>
+          <path data-mid d="M183 295C96 286 65 219 92 155c77 23 104 67 91 140Z"/>
+          <path data-leaf d="M221 183c-2-81 46-125 98-117 3 63-31 106-98 117Z"/>
+        </g>
+        <path class="botanical-vein" d="m36 431 78 127m29-118 110-140m-70-5-80-121m118 9 79-99"/>
+      </svg>
+    </div>
+
+    <!-- Navigation shell mounted by /src/app/shell.js -->
+    <header id="shellHeader"></header>
+    <div id="siteBannerHost"></div>
+
+    <!-- Primary dynamic SPA workspace -->
+    <main id="appWorkspace" class="app-main" tabindex="-1"></main>
+
+    <!-- Persistent creator footer -->
+    <footer class="product-footer creator-footer" id="appFooter">
+      <div class="creator-signature">
+        <small data-i18n-footer="crafted">crafted with care</small>
+        <strong data-i18n-footer="author">by Adham<span aria-hidden="true">.</span></strong>
+      </div>
+      <nav class="creator-contact" aria-label="Contact">
+        <p class="contact-label" data-i18n-footer="contact">For contact</p>
+        <a href="https://adhamelgohary.com" target="_blank" rel="noopener noreferrer">adhamelgohary.com ↗</a>
+        <a href="https://www.linkedin.com/in/adham-elgohary-02a315387/" target="_blank" rel="noopener noreferrer">LinkedIn ↗</a>
+        <a href="https://t.me/elgoo_0" target="_blank" rel="noopener noreferrer">Telegram · @elgoo_0 ↗</a>
+      </nav>
+    </footer>
+
+    <!-- Mobile bottom navigation -->
+    <nav class="shell-mobile-bar" id="shellBottomNav" aria-label="Mobile Navigation"></nav>
+  </div>
+
+  <!-- Shared Core Modules -->
+  <script defer src="/src/core/content-registry.js"></script>
+  <script defer src="/src/core/content-catalog.js"></script>
+  <script defer src="/src/core/content-library.js"></script>
+  <script defer src="/src/core/content-validator.js"></script>
+  <script defer src="/src/core/explanation-presenter.js"></script>
+  <script defer src="/src/core/import-pipeline.js"></script>
+  <script defer src="/src/core/mistakes-store.js"></script>
+  <script defer src="/src/core/offline-store.js"></script>
+  <script defer src="/src/core/online-client.js"></script>
+  <script defer src="/src/core/presence.js"></script>
+
+  <!-- Unified Application Modules -->
+  <script defer src="/src/app/model.js"></script>
+  <script defer src="/src/app/state.js"></script>
+  <script defer src="/src/app/offline-export.js"></script>
+  <script defer src="/src/app/shell.js"></script>
+  <script defer src="/src/app/hub.js"></script>
+  <script defer src="/src/app/player.js"></script>
+  <script defer src="/src/app/panels.js"></script>
+  <script defer src="/src/app/quick-search.js"></script>
+  <script defer src="/src/app/main.js"></script>
+</body>
+</html>

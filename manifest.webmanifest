@@ -1,0 +1,28 @@
+{
+  "name": "elgo lab. — Study Hub",
+  "short_name": "elgo lab.",
+  "description": "University study hub with course banks, smart revision decks, lecture summaries, PDFs, walkthrough videos, and ranked quizzes.",
+  "start_url": "/?flow=hub",
+  "scope": "/",
+  "display": "standalone",
+  "theme_color": "#191A1C",
+  "background_color": "#191A1C",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

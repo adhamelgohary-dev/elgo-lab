@@ -1,0 +1,15 @@
+node_modules/
+public/
+data-store/
+.wrangler/
+.env
+.dev.vars
+wrangler.toml
+tests/
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.zip
+tmp/
+.git/
