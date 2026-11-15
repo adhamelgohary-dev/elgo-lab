@@ -2034,109 +2034,144 @@ dialog.quick-search-dialog {
     gap: 4px;
   }
   .workspace-head {
-    padding: 12px 13px;
-    border-radius: 14px;
-    margin-bottom: 12px;
-    gap: 8px;
+    padding: 9px 11px;
+    border-radius: 12px;
+    margin-bottom: 10px;
+    gap: 7px;
+  }
+  .workspace-lead {
+    gap: 9px !important;
+    align-items: center !important;
+  }
+  .workspace-head .course-emblem {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+  .workspace-head .course-emblem svg {
+    width: 18px;
+    height: 18px;
   }
   .workspace-head h1 {
-    font-size: 1.15rem;
-    margin-bottom: 2px;
+    font-size: 0.98rem;
+    line-height: 1.2;
+    margin-bottom: 0;
   }
-  .workspace-head p {
-    font-size: 0.8rem;
-    line-height: 1.38;
+  .workspace-desc {
+    display: none;
+  }
+  .workspace-meta {
+    margin-top: 2px !important;
+    font-size: 0.72rem !important;
   }
   .course-arabic {
-    font-size: 0.92rem;
+    font-size: 0.78rem;
     margin-top: 0;
   }
   .course-tabs-bar {
-    gap: 6px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    gap: 5px;
+    padding-bottom: 1px;
+  }
+  .course-tabs-bar::-webkit-scrollbar {
+    display: none;
   }
   .course-tab-btn {
-    padding: 6px 10px;
-    font-size: 0.76rem;
-    border-radius: 9px;
+    flex-shrink: 0;
+    white-space: nowrap;
+    padding: 5px 9px;
+    font-size: 0.74rem;
+    border-radius: 8px;
   }
   .course-route {
-    padding: 11px 12px;
-    border-radius: 13px;
-    gap: 5px;
+    padding: 10px 11px;
+    border-radius: 12px;
+    gap: 4px;
   }
   .route-kicker {
-    font-size: 0.62rem;
+    font-size: 0.6rem;
   }
   .course-route strong {
-    font-size: 0.92rem;
-    line-height: 1.22;
+    font-size: 0.84rem;
+    line-height: 1.2;
   }
   .course-route p {
     display: none;
   }
   .route-meta {
-    padding-top: 6px;
-    font-size: 0.72rem;
+    padding-top: 5px;
+    font-size: 0.68rem;
+  }
+  .route-meta span:last-child {
+    display: none;
   }
   .sources-page-head {
-    margin-bottom: 8px;
+    margin-bottom: 6px;
   }
   .sources-page-head h2 {
-    font-size: 1.05rem;
+    font-size: 0.96rem;
   }
   .sources-page-head p {
-    font-size: 0.78rem;
+    display: none;
   }
   .sources-toolbar {
-    gap: 6px;
-    margin-bottom: 8px;
+    gap: 5px;
+    margin-bottom: 7px;
+  }
+  .sources-toolbar .inline button {
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    border-radius: 7px;
   }
   .filter-bar {
-    gap: 5px;
+    gap: 4px;
   }
   .filter-pill {
-    padding: 5px 10px;
-    font-size: 0.75rem;
+    padding: 4px 8px;
+    font-size: 0.72rem;
   }
   .source-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
     gap: 6px;
   }
   .source-tile {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto;
-    align-items: center;
-    gap: 2px 10px;
-    padding: 8px 11px;
-    border-radius: 11px;
-  }
-  .source-tile strong {
-    grid-column: 1;
-    grid-row: 1;
-    font-size: 0.84rem !important;
-    line-height: 1.25 !important;
-  }
-  .source-tile small {
-    grid-column: 1;
-    grid-row: 2;
-    font-size: 0.72rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: stretch;
+    min-width: 0;
+    gap: 4px;
+    padding: 7px 8px;
+    border-radius: 10px;
   }
   .source-tile-top {
-    grid-column: 2;
-    grid-row: 1 / span 2;
-    gap: 6px;
-    flex-shrink: 0;
+    width: 100%;
+    gap: 4px;
+  }
+  .source-tile strong {
+    font-size: 0.76rem !important;
+    line-height: 1.2 !important;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .source-tile small {
+    font-size: 0.66rem;
   }
   .source-kind-tag {
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     padding: 1px 6px;
   }
   .source-tick {
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
-    font-size: 0.72rem;
+    width: 18px;
+    height: 18px;
+    border-radius: 5px;
+    font-size: 0.68rem;
   }
   .setup-panel {
     padding: 12px;
