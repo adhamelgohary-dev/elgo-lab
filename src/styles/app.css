@@ -1941,63 +1941,75 @@ dialog.quick-search-dialog {
     color: var(--ink);
     text-decoration: none;
   }
-  .course-garden-grid,
+  .course-garden-grid {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
   .route-grid,
   .shelf-collections-grid {
-    grid-template-columns: 1fr;
-    gap: 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+  .route-grid {
+    margin-bottom: 12px;
   }
   .garden-intro {
     min-height: 0;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
     display: block;
   }
   .garden-intro .eyebrow {
     font-size: 9px;
     letter-spacing: 0.1em;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
   .garden-intro h1 {
-    font-size: 24px;
+    font-size: 22px;
     line-height: 1.15;
   }
+  .continue-block {
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border-radius: 12px;
+    gap: 8px;
+  }
   .section-heading {
-    margin-bottom: 10px;
+    margin-bottom: 8px;
   }
   .section-heading h2 {
-    font-size: 15px;
+    font-size: 14.5px;
   }
   .section-heading span {
     font-size: 10px;
   }
   .course-tile {
-    min-height: 64px;
-    grid-template-columns: 40px minmax(0, 1fr) 24px;
+    min-height: 54px;
+    grid-template-columns: 34px minmax(0, 1fr) 22px;
     align-items: center;
-    gap: 10px;
-    padding: 12px;
-    border-radius: 15px;
+    gap: 9px;
+    padding: 9px 11px;
+    border-radius: 13px;
     box-shadow: inset 1px 2px 2px var(--finish-glint), 0 3px 0 var(--finish-shadow), 0 6px 10px var(--finish-drop);
   }
   .course-emblem {
-    width: 40px;
-    height: 40px;
-    border-radius: 11px;
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
   }
   .course-emblem svg {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
   }
   .tile-copy {
     padding: 0;
   }
   .tile-copy > strong {
-    font-size: 14.5px;
+    font-size: 13.5px;
     letter-spacing: -0.02em;
     line-height: 1.25;
   }
   .tile-copy > small {
-    font-size: 10.5px;
+    font-size: 10px;
     margin-top: 2px;
   }
   .tile-open {
@@ -2011,13 +2023,200 @@ dialog.quick-search-dialog {
     display: none;
   }
   .tile-open b {
-    width: 24px;
-    height: 24px;
-    border-radius: 8px;
-    font-size: 14px;
+    width: 22px;
+    height: 22px;
+    border-radius: 7px;
+    font-size: 13px;
+  }
+  .breadcrumbs {
+    margin-bottom: 8px;
+    font-size: 0.78rem;
+    gap: 4px;
+  }
+  .workspace-head {
+    padding: 12px 13px;
+    border-radius: 14px;
+    margin-bottom: 12px;
+    gap: 8px;
+  }
+  .workspace-head h1 {
+    font-size: 1.15rem;
+    margin-bottom: 2px;
+  }
+  .workspace-head p {
+    font-size: 0.8rem;
+    line-height: 1.38;
+  }
+  .course-arabic {
+    font-size: 0.92rem;
+    margin-top: 0;
+  }
+  .course-tabs-bar {
+    gap: 6px;
+  }
+  .course-tab-btn {
+    padding: 6px 10px;
+    font-size: 0.76rem;
+    border-radius: 9px;
+  }
+  .course-route {
+    padding: 11px 12px;
+    border-radius: 13px;
+    gap: 5px;
+  }
+  .route-kicker {
+    font-size: 0.62rem;
+  }
+  .course-route strong {
+    font-size: 0.92rem;
+    line-height: 1.22;
+  }
+  .course-route p {
+    display: none;
+  }
+  .route-meta {
+    padding-top: 6px;
+    font-size: 0.72rem;
+  }
+  .sources-page-head {
+    margin-bottom: 8px;
+  }
+  .sources-page-head h2 {
+    font-size: 1.05rem;
+  }
+  .sources-page-head p {
+    font-size: 0.78rem;
+  }
+  .sources-toolbar {
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .filter-bar {
+    gap: 5px;
+  }
+  .filter-pill {
+    padding: 5px 10px;
+    font-size: 0.75rem;
+  }
+  .source-grid {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .source-tile {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    align-items: center;
+    gap: 2px 10px;
+    padding: 8px 11px;
+    border-radius: 11px;
+  }
+  .source-tile strong {
+    grid-column: 1;
+    grid-row: 1;
+    font-size: 0.84rem !important;
+    line-height: 1.25 !important;
+  }
+  .source-tile small {
+    grid-column: 1;
+    grid-row: 2;
+    font-size: 0.72rem;
+  }
+  .source-tile-top {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .source-kind-tag {
+    font-size: 0.65rem;
+    padding: 1px 6px;
+  }
+  .source-tick {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+    font-size: 0.72rem;
+  }
+  .setup-panel {
+    padding: 12px;
+    border-radius: 14px;
+    gap: 8px;
+  }
+  .mode-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+  .mode-choice {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 4px;
+    padding: 8px 6px;
+    border-radius: 10px;
+    font-size: 0.76rem;
+  }
+  .mode-choice small {
+    display: none !important;
+  }
+  .mode-tag {
+    display: block;
+    font-size: 0.68rem;
+    margin-top: 1px;
+  }
+  .setup-row {
+    font-size: 0.8rem;
+  }
+  .shelf-collection-card {
+    padding: 9px 10px;
+    border-radius: 11px;
+    gap: 2px;
+  }
+  .shelf-collection-card strong {
+    font-size: 0.84rem;
+  }
+  .shelf-collection-card small {
+    font-size: 0.72rem;
+    line-height: 1.25;
+  }
+  .shelf-count {
+    font-size: 0.7rem;
+    margin-top: 2px;
+  }
+  .resource-file-list {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .resource-file {
+    padding: 11px 12px;
+    border-radius: 12px;
+    gap: 8px;
+  }
+  .lecture-card {
+    padding: 11px 12px;
+    border-radius: 12px;
+  }
+  .hub-panel {
+    padding: 13px;
+    border-radius: 14px;
+    gap: 11px;
+  }
+  .panel-item {
+    padding: 10px 12px;
+    border-radius: 11px;
+    gap: 6px;
+  }
+  dialog.elgo-dialog,
+  dialog.quick-search-dialog {
+    width: calc(100vw - 16px);
+    border-radius: 15px;
+  }
+  .dialog-body {
+    padding: 15px 14px;
+    gap: 10px;
   }
   .app-main {
-    padding: 14px 12px 92px;
+    padding: 10px 10px 84px;
   }
   .product-footer,
   .product-footer.creator-footer {
@@ -2035,7 +2234,9 @@ dialog.quick-search-dialog {
     text-align: left;
   }
   .mobile-session-bar {
-    bottom: 66px;
+    bottom: 60px;
+    padding: 8px 11px;
+    border-radius: 12px;
   }
   .shell-mobile-bar {
     position: fixed;

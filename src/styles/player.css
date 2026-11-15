@@ -564,11 +564,37 @@
 }
 
 @media (max-width: 560px) {
+  .player-wrap {
+    gap: 10px;
+  }
+  .player-topbar {
+    padding: 9px 11px;
+    border-radius: 12px;
+    gap: 8px;
+  }
   .question-card {
-    padding: 15px 14px;
+    padding: 12px;
+    border-radius: 14px;
+    gap: 11px;
+  }
+  .question-stem {
+    font-size: 0.98rem;
+    line-height: 1.45;
+  }
+  .options-stack {
+    gap: 7px;
   }
   .option-btn {
-    grid-template-columns: 30px minmax(0, 1fr);
+    grid-template-columns: 28px minmax(0, 1fr);
+    padding: 9px 11px;
+    border-radius: 11px;
+    gap: 9px;
+    font-size: 0.9rem;
+  }
+  .option-letter {
+    width: 28px;
+    height: 28px;
+    font-size: 0.78rem;
   }
   .option-status {
     grid-column: 2;
