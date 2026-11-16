@@ -359,30 +359,162 @@
     };
   }
 
+  var lastMutationMs = 0;
+  var localMutationSeq = 0;
+  var progressSyncTimer = null;
+  var progressSyncInFlight = null;
+  var syncRetryTimer = null;
+  var syncRetryAttempts = 0;
+  var refreshSessionInFlight = null;
+  var lastCloudPullAt = 0;
+  var cloudPullInFlight = null;
+  var legacySeedMergedThisLoad = false;
+  var lastCloudSyncStatus = { ok: true, at: 0, status: 0, error: "", offline: false };
+
+  function setLastSyncStatus(patch) {
+    lastCloudSyncStatus = Object.assign({
+      ok: true,
+      at: Date.now(),
+      status: 0,
+      error: "",
+      offline: false,
+    }, patch || {}, { at: Date.now() });
+  }
+
+  function getSyncStatus() {
+    return Object.assign({}, lastCloudSyncStatus);
+  }
+
+  function warnSyncFailure(label, errMsg, status) {
+    try {
+      if (typeof console !== "undefined" && typeof console.warn === "function") {
+        console.warn("[ElgoSync]", label, status ? ("HTTP " + status) : "", errMsg || "");
+      }
+    } catch (_e) { /* ignore */ }
+  }
+
+  function parseIsoMsClient(val) {
+    if (!val || typeof val !== "string") return 0;
+    var ms = Date.parse(val);
+    return Number.isFinite(ms) ? ms : 0;
+  }
+
+  function observeMutationIso(val) {
+    var ms = parseIsoMsClient(val);
+    var maxReasonable = Date.now() + 3600000;
+    if (ms > lastMutationMs && ms <= maxReasonable) {
+      lastMutationMs = ms;
+    }
+  }
+
+  function nextMutationIso() {
+    var now = Date.now();
+    var minMs = 0;
+    for (var i = 0; i < arguments.length; i++) {
+      var candidate = parseIsoMsClient(arguments[i]);
+      if (candidate > minMs) minMs = candidate;
+    }
+    var next = Math.max(now, lastMutationMs + 1, minMs + 1);
+    lastMutationMs = next;
+    return new Date(next).toISOString();
+  }
+
+  function trimTimestampMapClient(src, maxEntries) {
+    if (!src || typeof src !== "object" || Array.isArray(src)) return {};
+    var limit = maxEntries || 500;
+    var entries = Object.entries(src).filter(function (pair) {
+      return pair[0] && typeof pair[1] === "string" && parseIsoMsClient(pair[1]) > 0;
+    });
+    if (entries.length > limit) {
+      entries.sort(function (a, b) { return parseIsoMsClient(b[1]) - parseIsoMsClient(a[1]); });
+      entries.length = limit;
+    }
+    var out = {};
+    entries.forEach(function (pair) { out[pair[0]] = pair[1]; });
+    return out;
+  }
+
   function getState() {
     var raw = readStorage(STATE_KEY);
     var parsed = safeJsonParse(raw, null);
     if (!parsed || typeof parsed !== "object") {
       var legacy = readLegacyStateSeed();
+      legacySeedMergedThisLoad = true;
       return {
         selectedSourcesBySubject: {},
         bookmarks: legacy.bookmarks,
+        deletedBookmarks: {},
         mistakes: legacy.mistakes,
+        deletedMistakes: {},
+        mistakesClearedAt: null,
         attemptHistory: legacy.attempts,
         activeSession: null,
         lastAttempt: null,
         quizModes: {},
+        ownerStudentId: "",
+        ownerUsername: "",
+        pendingProgressSync: legacy.bookmarks.length > 0 || legacy.mistakes.length > 0,
+        legacyMerged: true,
       };
     }
-    return Object.assign({
+    var stateObj = Object.assign({
       selectedSourcesBySubject: {},
       bookmarks: [],
+      deletedBookmarks: {},
       mistakes: [],
+      deletedMistakes: {},
+      mistakesClearedAt: null,
       attemptHistory: [],
       activeSession: null,
       lastAttempt: null,
       quizModes: {},
+      ownerStudentId: "",
+      ownerUsername: "",
+      pendingProgressSync: false,
     }, parsed);
+
+    if (!legacySeedMergedThisLoad && !parsed.legacyMerged) {
+      legacySeedMergedThisLoad = true;
+      var leg = readLegacyStateSeed();
+      var addedLegacy = false;
+      if (leg.bookmarks.length) {
+        var existingBm = new Set((Array.isArray(stateObj.bookmarks) ? stateObj.bookmarks : []).map(function (b) {
+          return b && (b.internalId || b.id || "");
+        }).filter(Boolean));
+        var delBm = stateObj.deletedBookmarks && typeof stateObj.deletedBookmarks === "object" ? stateObj.deletedBookmarks : {};
+        leg.bookmarks.forEach(function (lb) {
+          var key = lb && (lb.internalId || lb.id || lb.questionId || "");
+          if (!key || existingBm.has(key)) return;
+          var delIso = delBm[key] || (lb.id ? delBm[lb.id] : "") || (lb.internalId ? delBm[lb.internalId] : "");
+          if (delIso && parseIsoMsClient(delIso) >= parseIsoMsClient(lb.savedAt)) return;
+          existingBm.add(key);
+          stateObj.bookmarks.push(lb);
+          addedLegacy = true;
+        });
+      }
+      if (leg.mistakes.length) {
+        var existingMk = new Set((Array.isArray(stateObj.mistakes) ? stateObj.mistakes : []).map(function (m) {
+          return m && (m.internalId || m.id || m.questionId || "");
+        }).filter(Boolean));
+        var delMk = stateObj.deletedMistakes && typeof stateObj.deletedMistakes === "object" ? stateObj.deletedMistakes : {};
+        var clearedMs = parseIsoMsClient(stateObj.mistakesClearedAt);
+        leg.mistakes.forEach(function (lm) {
+          var key = lm && (lm.internalId || lm.id || lm.questionId || "");
+          if (!key || existingMk.has(key)) return;
+          var itemMs = Math.max(parseIsoMsClient(lm.updatedAt), parseIsoMsClient(lm.lastAttemptedAt), parseIsoMsClient(lm.resolvedAt));
+          if (Math.max(parseIsoMsClient(delMk[key]), clearedMs) > itemMs) return;
+          existingMk.add(key);
+          stateObj.mistakes.push(lm);
+          addedLegacy = true;
+        });
+      }
+      if (addedLegacy) {
+        stateObj.legacyMerged = true;
+        stateObj.pendingProgressSync = true;
+        saveState(stateObj);
+      }
+    }
+    return stateObj;
   }
 
   function saveState(next) {
@@ -438,28 +570,120 @@
     return headers;
   }
 
+  function hasLocalUnsyncedItems(st, cloudProg) {
+    if (!st || typeof st !== "object") return false;
+    var localBm = Array.isArray(st.bookmarks) ? st.bookmarks : [];
+    var localMk = Array.isArray(st.mistakes) ? st.mistakes : [];
+    var localAtt = Array.isArray(st.attemptHistory) ? st.attemptHistory : [];
+    var localDelBm = st.deletedBookmarks && typeof st.deletedBookmarks === "object" ? Object.keys(st.deletedBookmarks) : [];
+    var localDelMk = st.deletedMistakes && typeof st.deletedMistakes === "object" ? Object.keys(st.deletedMistakes) : [];
+    if (!localBm.length && !localMk.length && !localAtt.length && !localDelBm.length && !localDelMk.length && !st.mistakesClearedAt) {
+      return false;
+    }
+    if (!cloudProg || typeof cloudProg !== "object") return true;
+    var cloudBmById = {};
+    (Array.isArray(cloudProg.bookmarks) ? cloudProg.bookmarks : []).forEach(function (b) {
+      var cid = b && (b.internalId || b.id || b.questionId || "");
+      if (cid) cloudBmById[cid] = b;
+    });
+    for (var i = 0; i < localBm.length; i++) {
+      var lb = localBm[i];
+      var bid = lb && (lb.internalId || lb.id || lb.questionId || "");
+      if (!bid) continue;
+      var cb = cloudBmById[bid];
+      if (!cb) return true;
+      if (parseIsoMsClient(lb.savedAt) > parseIsoMsClient(cb.savedAt)) return true;
+      if (lb.subjectId && !cb.subjectId) return true;
+    }
+    var rawCloudMk = Array.isArray(cloudProg.mistakes)
+      ? cloudProg.mistakes
+      : (cloudProg.mistakes && Array.isArray(cloudProg.mistakes.items) ? cloudProg.mistakes.items : []);
+    var cloudMkById = {};
+    rawCloudMk.forEach(function (m) {
+      var mid = m && (m.internalId || m.id || m.questionId || "");
+      if (mid) cloudMkById[mid] = m;
+    });
+    for (var j = 0; j < localMk.length; j++) {
+      var lm = localMk[j];
+      var lmid = lm && (lm.internalId || lm.id || "");
+      if (!lmid) continue;
+      var cm = cloudMkById[lmid];
+      if (!cm) return true;
+      var lmTime = Math.max(parseIsoMsClient(lm.updatedAt), parseIsoMsClient(lm.resolvedAt));
+      var cmTime = Math.max(parseIsoMsClient(cm.updatedAt), parseIsoMsClient(cm.lastAttemptedAt), parseIsoMsClient(cm.resolvedAt));
+      if (lmTime > cmTime) return true;
+    }
+    var cloudDelBm = cloudProg.deletedBookmarks && typeof cloudProg.deletedBookmarks === "object" ? cloudProg.deletedBookmarks : {};
+    for (var d1 = 0; d1 < localDelBm.length; d1++) {
+      var dk1 = localDelBm[d1];
+      if (parseIsoMsClient(st.deletedBookmarks[dk1]) > parseIsoMsClient(cloudDelBm[dk1])) return true;
+    }
+    var cloudDelMk = cloudProg.deletedMistakes && typeof cloudProg.deletedMistakes === "object" ? cloudProg.deletedMistakes : {};
+    for (var d2 = 0; d2 < localDelMk.length; d2++) {
+      var dk2 = localDelMk[d2];
+      if (parseIsoMsClient(st.deletedMistakes[dk2]) > parseIsoMsClient(cloudDelMk[dk2])) return true;
+    }
+    if (parseIsoMsClient(st.mistakesClearedAt) > parseIsoMsClient(cloudProg.mistakesClearedAt)) return true;
+    return false;
+  }
+
   async function refreshSession() {
     var auth = getAuth();
     if (!auth || !auth.token) return null;
-    try {
-      var res = await fetch("/api/auth/me", {
-        headers: authHeaders(),
-        cache: "no-store",
-      });
-      if (res.status === 401) {
-        setAuth(null);
-        return null;
+    if (refreshSessionInFlight) return refreshSessionInFlight;
+    refreshSessionInFlight = (async function () {
+      try {
+        lastCloudPullAt = Date.now();
+        var res = await fetch("/api/auth/me", {
+          headers: authHeaders(),
+          cache: "no-store",
+        });
+        if (res.status === 401) {
+          setLastSyncStatus({ ok: false, status: 401, error: "Session expired — please sign in again.", offline: false });
+          warnSyncFailure("refreshSession", "Session expired", 401);
+          setAuth(null);
+          return null;
+        }
+        var data = await res.json().catch(function () { return null; });
+        if (res.ok && data && data.ok && data.profile) {
+          var next = Object.assign({}, auth, { profile: data.profile });
+          var cloudProg = data.profile.progress && typeof data.profile.progress === "object" ? data.profile.progress : null;
+          var prevSt = getState();
+          var differentOwner = Boolean(prevSt.ownerStudentId && data.profile.studentId && prevSt.ownerStudentId !== data.profile.studentId);
+          var needPush = !differentOwner && (Boolean(prevSt.pendingProgressSync) || hasLocalUnsyncedItems(prevSt, cloudProg));
+          var progressChanged = false;
+          if (cloudProg) {
+            progressChanged = applyCloudProgress(cloudProg, {
+              studentId: data.profile.studentId || "",
+              username: data.profile.username || "",
+              replace: differentOwner,
+            });
+          }
+          setAuth(next);
+          if (needPush) {
+            var pushRes = await syncProgressToCloud({ force: true }).catch(function () { return null; });
+            if (pushRes && pushRes.changed) progressChanged = true;
+          } else {
+            setLastSyncStatus({ ok: true, status: res.status || 200, error: "", offline: false });
+          }
+          if (progressChanged && typeof document !== "undefined" && typeof document.dispatchEvent === "function" && typeof root.CustomEvent === "function") {
+            document.dispatchEvent(new root.CustomEvent("elgo:progresschange"));
+          }
+          return next;
+        }
+        var pullErr = (data && data.error) || ("Failed to load cloud session (HTTP " + res.status + ")");
+        setLastSyncStatus({ ok: false, status: res.status || 0, error: pullErr, offline: false });
+        warnSyncFailure("refreshSession", pullErr, res.status || 0);
+      } catch (err) {
+        var netErr = (err && err.message) ? err.message : "Network error while loading cloud progress";
+        setLastSyncStatus({ ok: false, status: 0, error: netErr, offline: true });
+        warnSyncFailure("refreshSession", netErr, 0);
       }
-      var data = await res.json().catch(function () { return null; });
-      if (res.ok && data && data.ok && data.profile) {
-        var next = Object.assign({}, auth, { profile: data.profile });
-        setAuth(next);
-        return next;
-      }
-    } catch (_err) {
-      // Keep cached session offline
-    }
-    return auth;
+      return auth;
+    })().finally(function () {
+      refreshSessionInFlight = null;
+    });
+    return refreshSessionInFlight;
   }
 
   function normalizeCatalogData(raw) {
@@ -1023,16 +1247,28 @@
     var internalId = question.internalId || question.id;
     var st = getState();
     var list = Array.isArray(st.bookmarks) ? st.bookmarks.slice() : [];
+    var delMap = Object.assign({}, st.deletedBookmarks && typeof st.deletedBookmarks === "object" ? st.deletedBookmarks : {});
     var idx = list.findIndex(function (b) {
       return b && (b.internalId === internalId || b.id === internalId);
     });
 
     if (idx >= 0) {
-      list.splice(idx, 1);
+      var removed = list.splice(idx, 1)[0];
+      var delIso = nextMutationIso(removed && removed.savedAt);
+      if (internalId) delMap[internalId] = delIso;
+      if (removed && removed.id && removed.id !== internalId) delMap[removed.id] = delIso;
       st.bookmarks = list;
+      st.deletedBookmarks = trimTimestampMapClient(delMap, 500);
+      st.pendingProgressSync = true;
+      localMutationSeq += 1;
       saveState(st);
+      scheduleCloudProgressSync();
       return false;
     }
+
+    var savedIso = nextMutationIso(delMap[internalId], delMap[question.id]);
+    if (internalId) delete delMap[internalId];
+    if (question.id) delete delMap[question.id];
 
     var opts = Array.isArray(question.options) ? question.options : [];
     var rightOpt = opts.find(function (o) { return o && o.id === question.correctOptionId; });
@@ -1051,10 +1287,14 @@
       images: qImgs,
       correctOptionId: question.correctOptionId || null,
       correctAnswer: rightOpt ? (rightOpt.id + ") " + rightOpt.text) : "",
-      savedAt: new Date().toISOString(),
+      savedAt: savedIso,
     });
     st.bookmarks = list;
+    st.deletedBookmarks = trimTimestampMapClient(delMap, 500);
+    st.pendingProgressSync = true;
+    localMutationSeq += 1;
     saveState(st);
+    scheduleCloudProgressSync();
     return true;
   }
 
@@ -1070,7 +1310,9 @@
         collectionId: m.quizId || null,
         status: m.resolved ? "resolved" : "unresolved",
         failureCount: Number(m.missCount || m.failureCount || 1),
+        firstFailedAt: m.firstFailedAt || null,
         lastAttemptedAt: m.updatedAt || m.lastAttemptedAt || null,
+        resolvedAt: m.resolvedAt || null,
         selectedOptionId: m.lastWrongOptionId || m.selectedOptionId || null,
         correctOptionId: m.correctOptionId || null,
         questionText: m.question || m.questionText || "",
@@ -1093,6 +1335,10 @@
         ? prev.images
         : ((extraMeta && item.internalId === extraMeta.internalId && Array.isArray(extraMeta.images)) ? extraMeta.images : []);
       var primaryImg = prev.image || (imgList[0] ? imgList[0].url : "") || ((extraMeta && item.internalId === extraMeta.internalId && extraMeta.image) || "");
+      var resolvedFlag = item.status === "resolved";
+      var bestTime = parseIsoMsClient(item.resolvedAt) > parseIsoMsClient(item.lastAttemptedAt)
+        ? item.resolvedAt
+        : (item.lastAttemptedAt || prev.updatedAt || new Date().toISOString());
       return {
         id: item.originalQuestionId || prev.id || item.internalId,
         internalId: item.internalId,
@@ -1105,8 +1351,10 @@
         correctOptionId: item.correctOptionId || prev.correctOptionId || null,
         lastWrongOptionId: item.selectedOptionId || prev.lastWrongOptionId || null,
         missCount: Number(item.failureCount || 1),
-        resolved: item.status === "resolved",
-        updatedAt: item.lastAttemptedAt || new Date().toISOString(),
+        resolved: resolvedFlag,
+        updatedAt: bestTime,
+        resolvedAt: resolvedFlag ? (item.resolvedAt || prev.resolvedAt || bestTime) : null,
+        firstFailedAt: item.firstFailedAt || prev.firstFailedAt || bestTime,
       };
     });
   }
@@ -1119,6 +1367,16 @@
       : (question.image ? [{ url: question.image }] : []);
     var st = getState();
     var list = Array.isArray(st.mistakes) ? st.mistakes.slice() : [];
+    var delMap = Object.assign({}, st.deletedMistakes && typeof st.deletedMistakes === "object" ? st.deletedMistakes : {});
+    var existing = list.find(function (m) { return m && (m.internalId === internalId || m.id === internalId); });
+    var mutIso = nextMutationIso(
+      existing && existing.updatedAt,
+      existing && existing.resolvedAt,
+      delMap[internalId],
+      st.mistakesClearedAt
+    );
+    if (internalId) delete delMap[internalId];
+    if (question.id) delete delMap[question.id];
     var ms = getMistakesStore();
 
     if (ms && typeof ms.recordAttempt === "function") {
@@ -1133,19 +1391,28 @@
         correctOptionId: question.correctOptionId || null,
         questionText: question.question || question.text || "",
         isCorrect: false,
-      });
+      }, mutIso);
       st.mistakes = fromCoreMistakeStore(updated, list, {
         internalId: internalId,
         subjectName: (meta && meta.subjectName) || "",
         image: qImgs[0] ? qImgs[0].url : "",
         images: qImgs,
+      }).map(function (m) {
+        if (m && m.internalId === internalId) {
+          return Object.assign({}, m, { resolved: false, resolvedAt: null, updatedAt: mutIso });
+        }
+        return m;
       });
       // Put the newly missed item first so recent mistakes stay immediately visible
       var hitIdx = st.mistakes.findIndex(function (m) { return m.internalId === internalId; });
       if (hitIdx > 0) {
         st.mistakes.unshift(st.mistakes.splice(hitIdx, 1)[0]);
       }
+      st.deletedMistakes = trimTimestampMapClient(delMap, 500);
+      st.pendingProgressSync = true;
+      localMutationSeq += 1;
       saveState(st);
+      scheduleCloudProgressSync();
       return;
     }
 
@@ -1161,7 +1428,8 @@
         image: qImgs[0] ? qImgs[0].url : (prev.image || ""),
         images: qImgs.length ? qImgs : (prev.images || []),
         resolved: false,
-        updatedAt: new Date().toISOString(),
+        resolvedAt: null,
+        updatedAt: mutIso,
       });
     } else {
       list.unshift({
@@ -1177,12 +1445,18 @@
         lastWrongOptionId: wrongOptionId || null,
         missCount: 1,
         resolved: false,
-        updatedAt: new Date().toISOString(),
+        resolvedAt: null,
+        firstFailedAt: mutIso,
+        updatedAt: mutIso,
       });
     }
 
     st.mistakes = list;
+    st.deletedMistakes = trimTimestampMapClient(delMap, 500);
+    st.pendingProgressSync = true;
+    localMutationSeq += 1;
     saveState(st);
+    scheduleCloudProgressSync();
   }
 
   function getMistakes(subjectId, opts) {
@@ -1231,25 +1505,42 @@
 
   function setMistakeResolved(internalId, resolved) {
     var st = getState();
-    var list = st.mistakes || [];
+    var list = Array.isArray(st.mistakes) ? st.mistakes : [];
+    var target = list.find(function (m) { return m && (m.internalId === internalId || m.id === internalId); });
+    var mutIso = nextMutationIso(target && target.updatedAt, target && target.resolvedAt);
     var ms = getMistakesStore();
     if (ms && typeof ms.resolveMistake === "function" && typeof ms.reopenMistake === "function") {
       var coreStore = toCoreMistakeStore(list);
       var next = resolved
-        ? ms.resolveMistake(coreStore, internalId)
-        : ms.reopenMistake(coreStore, internalId);
-      st.mistakes = fromCoreMistakeStore(next, list);
-      saveState(st);
-      return;
+        ? ms.resolveMistake(coreStore, internalId, mutIso)
+        : ms.reopenMistake(coreStore, internalId, mutIso);
+      st.mistakes = fromCoreMistakeStore(next, list).map(function (m) {
+        if (m && (m.internalId === internalId || m.id === internalId)) {
+          return Object.assign({}, m, {
+            resolved: Boolean(resolved),
+            resolvedAt: resolved ? mutIso : null,
+            updatedAt: mutIso,
+          });
+        }
+        return m;
+      });
+    } else {
+      st.mistakes = list.map(function (m) {
+        if (!m) return m;
+        if (m.internalId === internalId || m.id === internalId) {
+          return Object.assign({}, m, {
+            resolved: Boolean(resolved),
+            resolvedAt: resolved ? mutIso : null,
+            updatedAt: mutIso,
+          });
+        }
+        return m;
+      });
     }
-    st.mistakes = list.map(function (m) {
-      if (!m) return m;
-      if (m.internalId === internalId || m.id === internalId) {
-        return Object.assign({}, m, { resolved: Boolean(resolved), updatedAt: new Date().toISOString() });
-      }
-      return m;
-    });
+    st.pendingProgressSync = true;
+    localMutationSeq += 1;
     saveState(st);
+    scheduleCloudProgressSync();
   }
 
   function resolveMistake(internalId) {
@@ -1262,17 +1553,25 @@
 
   function clearMistake(internalId) {
     var st = getState();
-    var list = st.mistakes || [];
+    var list = Array.isArray(st.mistakes) ? st.mistakes : [];
+    var target = list.find(function (m) { return m && (m.internalId === internalId || m.id === internalId); });
+    var delIso = nextMutationIso(target && target.updatedAt, target && target.resolvedAt);
+    var delMap = Object.assign({}, st.deletedMistakes && typeof st.deletedMistakes === "object" ? st.deletedMistakes : {});
+    if (internalId) delMap[internalId] = delIso;
+    if (target && target.id && target.id !== internalId) delMap[target.id] = delIso;
     var ms = getMistakesStore();
     if (ms && typeof ms.deleteMistake === "function") {
       st.mistakes = fromCoreMistakeStore(ms.deleteMistake(toCoreMistakeStore(list), internalId), list);
-      saveState(st);
-      return;
+    } else {
+      st.mistakes = list.filter(function (m) {
+        return m && m.internalId !== internalId && m.id !== internalId;
+      });
     }
-    st.mistakes = list.filter(function (m) {
-      return m && m.internalId !== internalId && m.id !== internalId;
-    });
+    st.deletedMistakes = trimTimestampMapClient(delMap, 500);
+    st.pendingProgressSync = true;
+    localMutationSeq += 1;
     saveState(st);
+    scheduleCloudProgressSync();
   }
 
   function clearAllMistakes() {
@@ -1281,19 +1580,38 @@
     if (ms && typeof ms.clearMistakes === "function") {
       ms.clearMistakes();
     }
+    var prevStamps = [st.mistakesClearedAt];
+    (Array.isArray(st.mistakes) ? st.mistakes : []).forEach(function (m) {
+      if (m) {
+        if (m.updatedAt) prevStamps.push(m.updatedAt);
+        if (m.resolvedAt) prevStamps.push(m.resolvedAt);
+        if (m.firstFailedAt) prevStamps.push(m.firstFailedAt);
+      }
+    });
+    if (st.deletedMistakes && typeof st.deletedMistakes === "object") {
+      Object.values(st.deletedMistakes).forEach(function (v) { if (v) prevStamps.push(v); });
+    }
     st.mistakes = [];
+    st.deletedMistakes = {};
+    st.mistakesClearedAt = nextMutationIso.apply(null, prevStamps);
+    st.pendingProgressSync = true;
+    localMutationSeq += 1;
     saveState(st);
+    scheduleCloudProgressSync(true);
   }
 
   function recordCompletedAttempt(summary) {
     var st = getState();
     var hist = Array.isArray(st.attemptHistory) ? st.attemptHistory.slice() : [];
-    hist.unshift(Object.assign({}, summary, { finishedAt: new Date().toISOString() }));
+    hist.unshift(Object.assign({}, summary, { finishedAt: nextMutationIso() }));
     if (hist.length > 50) hist.length = 50;
     st.attemptHistory = hist;
     st.lastAttempt = summary;
     st.activeSession = null;
+    st.pendingProgressSync = true;
+    localMutationSeq += 1;
     saveState(st);
+    scheduleCloudProgressSync(true);
   }
 
   function exportProgressBlob() {
@@ -1306,13 +1624,549 @@
     return JSON.stringify(payload, null, 2);
   }
 
-  function applyCloudProgress(data) {
-    if (!data || typeof data !== "object") return;
+  function normalizeClientBookmarkItem(b) {
+    if (!b || typeof b !== "object") return null;
+    var internalId = String(b.internalId || b.id || b.questionId || "");
+    if (!internalId) return null;
+    var imgs = Array.isArray(b.images) ? b.images : (b.image ? [{ url: b.image }] : []);
+    return Object.assign({}, b, {
+      id: b.id || internalId,
+      internalId: internalId,
+      subjectId: b.subjectId || "",
+      subjectName: b.subjectName || "",
+      quizId: b.quizId || b.collectionId || "",
+      sourceLabel: b.sourceLabel || "",
+      question: b.question || b.questionText || "",
+      image: b.image || (imgs[0] && imgs[0].url) || "",
+      images: imgs,
+      correctOptionId: b.correctOptionId || null,
+      correctAnswer: b.correctAnswer || "",
+      savedAt: b.savedAt || "",
+    });
+  }
+
+  function normalizeClientMistakeItem(m) {
+    if (!m || typeof m !== "object") return null;
+    var internalId = String(m.internalId || m.id || m.questionId || "");
+    if (!internalId) return null;
+    var resolvedFlag = m.status === "resolved" || (m.status !== "unresolved" && Boolean(m.resolved));
+    var imgs = Array.isArray(m.images) ? m.images : (m.image ? [{ url: m.image }] : []);
+    var bestTime = m.updatedAt || (parseIsoMsClient(m.resolvedAt) > parseIsoMsClient(m.lastAttemptedAt) ? m.resolvedAt : m.lastAttemptedAt) || m.resolvedAt || "";
+    return {
+      id: m.originalQuestionId || m.id || internalId,
+      internalId: internalId,
+      subjectId: m.subjectId || "",
+      subjectName: m.subjectName || "",
+      quizId: m.quizId || m.collectionId || "",
+      question: m.question || m.questionText || "",
+      image: m.image || (imgs[0] && imgs[0].url) || "",
+      images: imgs,
+      correctOptionId: m.correctOptionId || null,
+      lastWrongOptionId: m.lastWrongOptionId || m.selectedOptionId || null,
+      missCount: Number(m.missCount || m.failureCount || 1),
+      resolved: resolvedFlag,
+      updatedAt: bestTime,
+      resolvedAt: resolvedFlag ? (m.resolvedAt || bestTime || null) : null,
+      firstFailedAt: m.firstFailedAt || bestTime || null,
+    };
+  }
+
+  function filterExternalImageList(list, stripDataUris) {
+    if (!Array.isArray(list)) return [];
+    if (!stripDataUris) return list;
+    return list.filter(function (img) {
+      var u = typeof img === "string" ? img : (img && img.url);
+      return u && String(u).indexOf("data:") !== 0;
+    });
+  }
+
+  function compactCloudBookmark(b, stripHeavyText, stripDataUris) {
+    var item = { id: b.id, internalId: b.internalId };
+    if (b.subjectId) item.subjectId = b.subjectId;
+    if (b.quizId) item.quizId = b.quizId;
+    if (b.savedAt) item.savedAt = b.savedAt;
+    if (!stripHeavyText) {
+      if (b.subjectName) item.subjectName = b.subjectName;
+      if (b.sourceLabel) item.sourceLabel = b.sourceLabel;
+      if (b.question) item.question = b.question;
+      if (b.image && (!stripDataUris || String(b.image).indexOf("data:") !== 0)) item.image = b.image;
+      var imgs = filterExternalImageList(b.images, stripDataUris);
+      if (imgs.length) item.images = imgs;
+      if (b.correctOptionId) item.correctOptionId = b.correctOptionId;
+      if (b.correctAnswer) item.correctAnswer = b.correctAnswer;
+    }
+    return item;
+  }
+
+  function compactCloudMistake(m, stripHeavyText, stripDataUris) {
+    var item = {
+      id: m.id,
+      internalId: m.internalId,
+      missCount: Number(m.missCount || 1),
+      status: m.resolved ? "resolved" : "unresolved",
+      resolved: Boolean(m.resolved),
+    };
+    if (m.subjectId) item.subjectId = m.subjectId;
+    if (m.quizId) item.quizId = m.quizId;
+    if (m.updatedAt) item.updatedAt = m.updatedAt;
+    if (m.resolvedAt) item.resolvedAt = m.resolvedAt;
+    if (m.firstFailedAt) item.firstFailedAt = m.firstFailedAt;
+    if (m.correctOptionId) item.correctOptionId = m.correctOptionId;
+    if (m.lastWrongOptionId) item.lastWrongOptionId = m.lastWrongOptionId;
+    if (!stripHeavyText) {
+      if (m.subjectName) item.subjectName = m.subjectName;
+      if (m.question) item.question = m.question;
+      if (m.image && (!stripDataUris || String(m.image).indexOf("data:") !== 0)) item.image = m.image;
+      var imgs = filterExternalImageList(m.images, stripDataUris);
+      if (imgs.length) item.images = imgs;
+    }
+    return item;
+  }
+
+  function compactCloudAttempt(a) {
+    if (!a || typeof a !== "object") return null;
+    return {
+      attemptId: a.attemptId || a.id || "",
+      id: a.id || a.attemptId || "",
+      subjectId: a.subjectId || "",
+      subjectName: a.subjectName || "",
+      quizId: a.quizId || a.collectionId || "",
+      quizTitle: a.quizTitle || "",
+      score: Number(a.score || 0),
+      total: Number(a.total || 0),
+      percent: Number(a.percent || 0),
+      finishedAt: a.finishedAt || "",
+    };
+  }
+
+  function exportCloudProgress(opts) {
     var st = getState();
-    if (Array.isArray(data.bookmarks)) st.bookmarks = data.bookmarks;
-    if (Array.isArray(data.mistakes)) st.mistakes = data.mistakes;
-    if (Array.isArray(data.attempts)) st.attemptHistory = data.attempts;
+    var normBm = (Array.isArray(st.bookmarks) ? st.bookmarks : []).map(normalizeClientBookmarkItem).filter(Boolean);
+    var normMk = (Array.isArray(st.mistakes) ? st.mistakes : []).map(normalizeClientMistakeItem).filter(Boolean);
+    var delBm = trimTimestampMapClient(st.deletedBookmarks, 500);
+    var delMk = trimTimestampMapClient(st.deletedMistakes, 500);
+    var attempts = (Array.isArray(st.attemptHistory) ? st.attemptHistory : [])
+      .slice(0, 50)
+      .map(compactCloudAttempt)
+      .filter(Boolean);
+
+    var buildPayload = function (stripHeavy, maxAttempts, stripDataUris) {
+      var out = {
+        bookmarks: normBm.map(function (b) { return compactCloudBookmark(b, stripHeavy, stripDataUris); }),
+        deletedBookmarks: delBm,
+        mistakes: {
+          schemaVersion: 2,
+          items: normMk.map(function (m) { return compactCloudMistake(m, stripHeavy, stripDataUris); }),
+        },
+        deletedMistakes: delMk,
+        attempts: attempts.slice(0, maxAttempts),
+      };
+      if (st.mistakesClearedAt) out.mistakesClearedAt = st.mistakesClearedAt;
+      return out;
+    };
+
+    if (!(opts && opts.compact)) {
+      var full = buildPayload(false, 50, false);
+      if (JSON.stringify(full).length <= 340 * 1024) return full;
+      var withoutDataUris = buildPayload(false, 50, true);
+      if (JSON.stringify(withoutDataUris).length <= 360 * 1024) return withoutDataUris;
+    }
+    var stripped = buildPayload(true, 25, true);
+    if (JSON.stringify(stripped).length <= 360 * 1024) return stripped;
+    return buildPayload(true, 0, true);
+  }
+
+  function mergeTimestampMapsClient(a, b) {
+    var combined = Object.assign({}, a && typeof a === "object" ? a : {});
+    if (b && typeof b === "object") {
+      Object.entries(b).forEach(function (pair) {
+        var k = pair[0];
+        var v = pair[1];
+        if (!k || typeof v !== "string") return;
+        if (!combined[k] || parseIsoMsClient(v) > parseIsoMsClient(combined[k])) combined[k] = v;
+      });
+    }
+    return trimTimestampMapClient(combined, 500);
+  }
+
+  function applyCloudProgress(data, opts) {
+    var raw = data && typeof data === "object" ? data : null;
+    if (raw && raw.profile && typeof raw.profile === "object" && raw.profile.progress) raw = raw.profile.progress;
+    else if (raw && raw.progress && typeof raw.progress === "object") raw = raw.progress;
+    if (!raw || typeof raw !== "object") return false;
+
+    var options = opts || {};
+    var auth = getAuth();
+    var targetStudentId = options.studentId || (auth && auth.profile && auth.profile.studentId) || "";
+    var targetUsername = options.username || (auth && auth.profile && auth.profile.username) || "";
+    var st = getState();
+    var beforeSig = JSON.stringify({ b: st.bookmarks || [], m: st.mistakes || [], a: st.attemptHistory || [] });
+
+    var replaceMode = Boolean(options.replace) || Boolean(st.ownerStudentId && targetStudentId && st.ownerStudentId !== targetStudentId);
+
+    var cloudBookmarks = (Array.isArray(raw.bookmarks) ? raw.bookmarks : []).map(normalizeClientBookmarkItem).filter(Boolean);
+    var rawCloudMistakes = Array.isArray(raw.mistakes)
+      ? raw.mistakes
+      : (raw.mistakes && Array.isArray(raw.mistakes.items) ? raw.mistakes.items : []);
+    var cloudMistakes = rawCloudMistakes.map(normalizeClientMistakeItem).filter(Boolean);
+    var cloudAttempts = Array.isArray(raw.attempts)
+      ? raw.attempts
+      : (Array.isArray(raw.attemptLog) ? raw.attemptLog : []);
+    var cloudDelBm = trimTimestampMapClient(raw.deletedBookmarks, 500);
+    var cloudDelMk = trimTimestampMapClient(raw.deletedMistakes, 500);
+    var cloudCleared = typeof raw.mistakesClearedAt === "string" ? raw.mistakesClearedAt : null;
+    cloudBookmarks.forEach(function (b) { if (b && b.savedAt) observeMutationIso(b.savedAt); });
+    cloudMistakes.forEach(function (m) {
+      if (m) {
+        observeMutationIso(m.updatedAt);
+        observeMutationIso(m.resolvedAt);
+      }
+    });
+    Object.values(cloudDelBm).forEach(observeMutationIso);
+    Object.values(cloudDelMk).forEach(observeMutationIso);
+    if (cloudCleared) observeMutationIso(cloudCleared);
+
+    if (replaceMode) {
+      var delBmRep = cloudDelBm;
+      st.bookmarks = cloudBookmarks.filter(function (b) {
+        return parseIsoMsClient(delBmRep[b.internalId]) <= parseIsoMsClient(b.savedAt);
+      });
+      var delMkRep = cloudDelMk;
+      var clearedMsRep = parseIsoMsClient(cloudCleared);
+      st.mistakes = cloudMistakes.filter(function (m) {
+        var delMs = Math.max(parseIsoMsClient(delMkRep[m.internalId]), clearedMsRep);
+        var itemMs = Math.max(parseIsoMsClient(m.updatedAt), parseIsoMsClient(m.resolvedAt));
+        return delMs <= itemMs;
+      });
+      st.attemptHistory = cloudAttempts.slice(0, 50);
+      st.deletedBookmarks = delBmRep;
+      st.deletedMistakes = delMkRep;
+      st.mistakesClearedAt = cloudCleared;
+    } else {
+      var delBookmarks = mergeTimestampMapsClient(st.deletedBookmarks, cloudDelBm);
+      var bmMap = new Map();
+      (Array.isArray(st.bookmarks) ? st.bookmarks.map(normalizeClientBookmarkItem).filter(Boolean) : []).concat(cloudBookmarks).forEach(function (item) {
+        var existing = bmMap.get(item.internalId);
+        if (!existing) {
+          bmMap.set(item.internalId, item);
+          return;
+        }
+        var newer = parseIsoMsClient(item.savedAt) > parseIsoMsClient(existing.savedAt) ? item : existing;
+        var older = newer === item ? existing : item;
+        bmMap.set(item.internalId, Object.assign({}, older, newer, {
+          subjectId: newer.subjectId || older.subjectId || "",
+          subjectName: newer.subjectName || older.subjectName || "",
+          quizId: newer.quizId || older.quizId || "",
+          sourceLabel: newer.sourceLabel || older.sourceLabel || "",
+          question: newer.question || older.question || "",
+          image: newer.image || older.image || "",
+          images: (newer.images && newer.images.length) ? newer.images : (older.images || []),
+          correctOptionId: newer.correctOptionId || older.correctOptionId || null,
+          correctAnswer: newer.correctAnswer || older.correctAnswer || "",
+        }));
+      });
+      st.bookmarks = [];
+      bmMap.forEach(function (item, id) {
+        var savedMs = parseIsoMsClient(item.savedAt);
+        var delMs = parseIsoMsClient(delBookmarks[id]);
+        if (delMs > savedMs) return;
+        if (savedMs > delMs && delBookmarks[id]) delete delBookmarks[id];
+        st.bookmarks.push(item);
+      });
+      st.deletedBookmarks = delBookmarks;
+
+      var delMistakes = mergeTimestampMapsClient(st.deletedMistakes, cloudDelMk);
+      var clearedAt = parseIsoMsClient(st.mistakesClearedAt) >= parseIsoMsClient(cloudCleared)
+        ? (st.mistakesClearedAt || cloudCleared)
+        : cloudCleared;
+      var clearedMs = parseIsoMsClient(clearedAt);
+      var mkMap = new Map();
+      (Array.isArray(st.mistakes) ? st.mistakes.map(normalizeClientMistakeItem).filter(Boolean) : []).concat(cloudMistakes).forEach(function (item) {
+        var prev = mkMap.get(item.internalId);
+        if (!prev) {
+          mkMap.set(item.internalId, item);
+          return;
+        }
+        var prevMs = Math.max(parseIsoMsClient(prev.updatedAt), parseIsoMsClient(prev.resolvedAt));
+        var nextMs = Math.max(parseIsoMsClient(item.updatedAt), parseIsoMsClient(item.resolvedAt));
+        var newer = nextMs > prevMs ? item : prev;
+        var older = newer === item ? prev : item;
+        var merged = Object.assign({}, older, newer, {
+          missCount: Math.max(Number(older.missCount || 1), Number(newer.missCount || 1)),
+          question: newer.question || older.question || "",
+          subjectName: newer.subjectName || older.subjectName || "",
+          subjectId: newer.subjectId || older.subjectId || "",
+          quizId: newer.quizId || older.quizId || "",
+          image: newer.image || older.image || "",
+          images: (newer.images && newer.images.length) ? newer.images : (older.images || []),
+          correctOptionId: newer.correctOptionId || older.correctOptionId || null,
+          lastWrongOptionId: newer.lastWrongOptionId || older.lastWrongOptionId || null,
+        });
+        mkMap.set(item.internalId, merged);
+      });
+      st.mistakes = [];
+      mkMap.forEach(function (item, id) {
+        var itemMs = Math.max(parseIsoMsClient(item.updatedAt), parseIsoMsClient(item.resolvedAt));
+        var delItemMs = parseIsoMsClient(delMistakes[id]);
+        var effDelMs = Math.max(delItemMs, clearedMs);
+        if (effDelMs > itemMs) return;
+        if (itemMs > delItemMs && delMistakes[id]) delete delMistakes[id];
+        st.mistakes.push(item);
+      });
+      st.deletedMistakes = delMistakes;
+      st.mistakesClearedAt = clearedAt || null;
+
+      var attList = (Array.isArray(st.attemptHistory) ? st.attemptHistory : []).concat(cloudAttempts);
+      var seenAtt = new Set();
+      st.attemptHistory = attList.filter(function (item) {
+        if (!item || typeof item !== "object") return false;
+        var id = item.attemptId || item.id || ((item.subjectId || "") + "::" + (item.quizId || item.collectionId || "") + "::" + (item.finishedAt || ""));
+        if (seenAtt.has(id)) return false;
+        seenAtt.add(id);
+        return true;
+      }).slice(0, 50);
+    }
+
+    if (targetStudentId) st.ownerStudentId = targetStudentId;
+    if (targetUsername) st.ownerUsername = targetUsername;
     saveState(st);
+
+    var afterSig = JSON.stringify({ b: st.bookmarks || [], m: st.mistakes || [], a: st.attemptHistory || [] });
+    return beforeSig !== afterSig;
+  }
+
+  function scheduleCloudProgressSync(immediate) {
+    var auth = getAuth();
+    if (!auth || !auth.token) return;
+    if (typeof fetch !== "function") return;
+    if (progressSyncTimer && typeof clearTimeout === "function") {
+      clearTimeout(progressSyncTimer);
+      progressSyncTimer = null;
+    }
+    if (immediate) {
+      syncProgressToCloud().catch(function () { return null; });
+      return;
+    }
+    if (typeof setTimeout === "function") {
+      progressSyncTimer = setTimeout(function () {
+        progressSyncTimer = null;
+        syncProgressToCloud().catch(function () { return null; });
+      }, 120);
+      if (progressSyncTimer && typeof progressSyncTimer.unref === "function") {
+        progressSyncTimer.unref();
+      }
+    }
+  }
+
+  function clearSyncRetryTimer() {
+    if (syncRetryTimer && typeof clearTimeout === "function") {
+      clearTimeout(syncRetryTimer);
+      syncRetryTimer = null;
+    }
+  }
+
+  function scheduleSyncRetry() {
+    var auth = getAuth();
+    if (!auth || !auth.token || typeof fetch !== "function" || typeof setTimeout !== "function") return;
+    if (syncRetryAttempts >= 4) return;
+    clearSyncRetryTimer();
+    var delayMs = Math.min(30000, 2500 * Math.pow(2, syncRetryAttempts));
+    syncRetryAttempts += 1;
+    syncRetryTimer = setTimeout(function () {
+      syncRetryTimer = null;
+      var curAuth = getAuth();
+      if (!curAuth || !curAuth.token) return;
+      var st = getState();
+      if (!st.pendingProgressSync) return;
+      syncProgressToCloud().catch(function () { return null; });
+    }, delayMs);
+    if (syncRetryTimer && typeof syncRetryTimer.unref === "function") {
+      syncRetryTimer.unref();
+    }
+  }
+
+  async function syncProgressToCloud(opts) {
+    var auth = getAuth();
+    if (!auth || !auth.token || typeof fetch !== "function") {
+      return { ok: false, skipped: true };
+    }
+    if (progressSyncInFlight) {
+      if (!(opts && opts.force)) {
+        return progressSyncInFlight;
+      }
+      if (!(opts && opts.fromPageHide)) {
+        await progressSyncInFlight.catch(function () { return null; });
+      }
+    }
+    var runSync = async function () {
+      var seqBefore = localMutationSeq;
+      var sendPayload = async function (compactMode) {
+        var payloadProgress = exportCloudProgress({ compact: Boolean(compactMode) });
+        var bodyJson = JSON.stringify({ progress: payloadProgress });
+        // Browsers abort fetch({ keepalive: true }) when body exceeds 64 KiB; keep normal fetches un-capped.
+        var useKeepalive = Boolean(opts && opts.fromPageHide && bodyJson.length <= 60000);
+        var res = await fetch("/api/auth/sync-progress", {
+          method: "POST",
+          headers: authHeaders({ "Content-Type": "application/json" }),
+          body: bodyJson,
+          keepalive: useKeepalive,
+        });
+        return { res: res, payloadProgress: payloadProgress };
+      };
+
+      try {
+        var attempt = await sendPayload(Boolean(opts && opts.compact));
+        if (attempt.res.status === 413 && !(opts && opts.compact) && !(opts && opts.fromPageHide)) {
+          attempt = await sendPayload(true);
+        }
+        var res = attempt.res;
+        var payloadProgress = attempt.payloadProgress;
+        var data = await res.json().catch(function () { return null; });
+        if (res.status === 401) {
+          var err401 = (data && data.error) || "Session expired — please sign in again.";
+          setLastSyncStatus({ ok: false, status: 401, error: err401, offline: false });
+          warnSyncFailure("syncProgressToCloud", err401, 401);
+          return { ok: false, unauthorized: true, status: 401, error: err401 };
+        }
+        if (!res.ok || !data || !data.ok) {
+          var errMsg = (data && data.error) || ("Sync failed (HTTP " + res.status + ")");
+          setLastSyncStatus({ ok: false, status: res.status || 0, error: errMsg, offline: false });
+          warnSyncFailure("syncProgressToCloud", errMsg, res.status || 0);
+          if ((res.status >= 500 || res.status === 429) && !(opts && opts.fromPageHide) && getState().pendingProgressSync) {
+            scheduleSyncRetry();
+          }
+          return { ok: false, status: res.status || 0, error: errMsg };
+        }
+        clearSyncRetryTimer();
+        syncRetryAttempts = 0;
+        setLastSyncStatus({ ok: true, status: res.status || 200, error: "", offline: false });
+        var changed = false;
+        if (data.progress && typeof data.progress === "object") {
+          changed = applyCloudProgress(data.progress, {
+            studentId: (auth.profile && auth.profile.studentId) || "",
+            username: (auth.profile && auth.profile.username) || "",
+          });
+        }
+        var latestSt = getState();
+        if (localMutationSeq === seqBefore) {
+          latestSt.pendingProgressSync = false;
+          if (auth.profile && auth.profile.studentId) latestSt.ownerStudentId = auth.profile.studentId;
+          if (auth.profile && auth.profile.username) latestSt.ownerUsername = auth.profile.username;
+          saveState(latestSt);
+        } else {
+          scheduleCloudProgressSync(false);
+        }
+        if (changed && typeof document !== "undefined" && typeof document.dispatchEvent === "function" && typeof root.CustomEvent === "function") {
+          document.dispatchEvent(new root.CustomEvent("elgo:progresschange"));
+        }
+        return { ok: true, changed: changed, progress: data.progress || payloadProgress };
+      } catch (err) {
+        var netErr = (err && err.message) ? err.message : "Network error while syncing";
+        setLastSyncStatus({ ok: false, status: 0, error: netErr, offline: true });
+        warnSyncFailure("syncProgressToCloud", netErr, 0);
+        if (!(opts && opts.fromPageHide) && getState().pendingProgressSync) {
+          scheduleSyncRetry();
+        }
+        return { ok: false, offline: true, status: 0, error: netErr };
+      }
+    };
+    var promise = runSync().finally(function () {
+      if (progressSyncInFlight === promise) progressSyncInFlight = null;
+    });
+    progressSyncInFlight = promise;
+    return promise;
+  }
+
+  async function pullCloudProgress(opts) {
+    var auth = getAuth();
+    if (!auth || !auth.token) return false;
+    var throttleMs = (opts && typeof opts.throttleMs === "number") ? opts.throttleMs : 0;
+    if (!refreshSessionInFlight && throttleMs > 0 && Date.now() - lastCloudPullAt < throttleMs) {
+      return false;
+    }
+    if (cloudPullInFlight) return cloudPullInFlight;
+    var beforeSig = JSON.stringify({
+      b: getState().bookmarks || [],
+      m: getState().mistakes || [],
+      a: getState().attemptHistory || [],
+    });
+    cloudPullInFlight = refreshSession().then(function () {
+      var after = getState();
+      var afterSig = JSON.stringify({
+        b: after.bookmarks || [],
+        m: after.mistakes || [],
+        a: after.attemptHistory || [],
+      });
+      return beforeSig !== afterSig;
+    }).catch(function () {
+      return false;
+    }).finally(function () {
+      cloudPullInFlight = null;
+    });
+    return cloudPullInFlight;
+  }
+
+  async function syncNow() {
+    var auth = getAuth();
+    if (!auth || !auth.token) {
+      return {
+        ok: false,
+        skipped: true,
+        unauthorized: true,
+        status: 401,
+        error: "Sign in to sync your account across devices.",
+      };
+    }
+    var attemptSync = await Promise.resolve(syncPendingAttempts()).catch(function () { return null; });
+    var pushRes = await syncProgressToCloud({ force: true });
+    if (!pushRes || !pushRes.ok) {
+      var errRes = pushRes || getSyncStatus();
+      return {
+        ok: false,
+        unauthorized: Boolean(errRes.unauthorized || errRes.status === 401),
+        offline: Boolean(errRes.offline),
+        status: errRes.status || 0,
+        error: errRes.error || "Failed to push progress to cloud.",
+      };
+    }
+    var beforeSig = JSON.stringify({
+      b: getState().bookmarks || [],
+      m: getState().mistakes || [],
+      a: getState().attemptHistory || [],
+    });
+    var pulled = await refreshSession();
+    var syncStatus = getSyncStatus();
+    if (!pulled) {
+      return {
+        ok: false,
+        unauthorized: syncStatus.status === 401,
+        offline: Boolean(syncStatus.offline),
+        status: syncStatus.status || 401,
+        error: syncStatus.error || "Session expired — please sign in again.",
+      };
+    }
+    if (!syncStatus.ok) {
+      return {
+        ok: false,
+        unauthorized: syncStatus.status === 401,
+        offline: Boolean(syncStatus.offline),
+        status: syncStatus.status || 0,
+        error: syncStatus.error || "Failed to fetch latest cloud progress.",
+      };
+    }
+    var st = getState();
+    var afterSig = JSON.stringify({
+      b: st.bookmarks || [],
+      m: st.mistakes || [],
+      a: st.attemptHistory || [],
+    });
+    return {
+      ok: true,
+      changed: Boolean(pushRes.changed || beforeSig !== afterSig),
+      attemptsSynced: attemptSync && typeof attemptSync.synced === "number" ? attemptSync.synced : 0,
+      bookmarksCount: Array.isArray(st.bookmarks) ? st.bookmarks.length : 0,
+      mistakesCount: Array.isArray(st.mistakes) ? st.mistakes.length : 0,
+    };
   }
 
   function getContentLibrary() {
@@ -1445,7 +2299,13 @@
     clearAllMistakes: clearAllMistakes,
     recordCompletedAttempt: recordCompletedAttempt,
     exportProgressBlob: exportProgressBlob,
+    exportCloudProgress: exportCloudProgress,
     applyCloudProgress: applyCloudProgress,
+    syncProgressToCloud: syncProgressToCloud,
+    scheduleCloudProgressSync: scheduleCloudProgressSync,
+    pullCloudProgress: pullCloudProgress,
+    syncNow: syncNow,
+    getSyncStatus: getSyncStatus,
     loadPublicOverrides: loadPublicOverrides,
     refreshDynamicState: refreshDynamicState,
     getDynamicCatalog: function () { return (publicOverridesCache && publicOverridesCache.dynamicCatalog) || {}; },

@@ -72,8 +72,14 @@ self.addEventListener("fetch", (event) => {
     url.pathname.startsWith("/learn/") ||
     url.pathname.startsWith("/data/")
   ) {
+    var networkReq = req;
+    try {
+      networkReq = new Request(req, { cache: "no-cache" });
+    } catch (_err) {
+      networkReq = req;
+    }
     event.respondWith(
-      fetch(req)
+      fetch(networkReq)
         .then((res) => {
           if (res.ok) {
             const copy = res.clone();

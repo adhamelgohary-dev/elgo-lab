@@ -103,6 +103,9 @@
     var profile = auth && auth.profile;
     var bookmarksCount = (State.getState().bookmarks || []).length;
     var unresolvedCount = State.getMistakes("", { status: "unresolved" }).length;
+    var prevMenu = document.getElementById("shellMoreMenu");
+    var wasMoreOpen = Boolean(prevMenu && !prevMenu.classList.contains("hidden"));
+    var wasMobileSheet = Boolean(prevMenu && prevMenu.classList.contains("is-mobile-sheet"));
 
     header.className = "product-header";
     header.innerHTML = [
@@ -151,12 +154,24 @@
       '</div>'
     ].join("\n");
 
+    function setMoreMenuOpen(opening, asMobileSheet) {
+      var menu = document.getElementById("shellMoreMenu");
+      var btn = document.getElementById("shellMoreBtn");
+      var mobileBtn = document.getElementById("mobileMoreBtn");
+      if (menu) {
+        menu.classList.toggle("hidden", !opening);
+        menu.classList.toggle("is-mobile-sheet", Boolean(opening && asMobileSheet));
+      }
+      if (btn) btn.setAttribute("aria-expanded", opening ? "true" : "false");
+      if (mobileBtn) mobileBtn.setAttribute("aria-expanded", opening ? "true" : "false");
+    }
+
     if (bottomNav) {
       bottomNav.innerHTML = [
         '<a href="/?flow=hub" class="shell-mobile-link" data-nav="courses">' + svgIcon("courses") + '<span>' + esc(State.t("courses")) + '</span></a>',
         '<a href="/?panel=saved" class="shell-mobile-link" data-nav="saved">' + svgIcon("saved") + '<span>' + esc(State.t("saved")) + (bookmarksCount ? ' (' + bookmarksCount + ')' : '') + '</span></a>',
         '<a href="/?panel=mistakes" class="shell-mobile-link" data-nav="mistakes">' + svgIcon("mistakes") + '<span>' + esc(State.t("mistakes")) + (unresolvedCount ? ' (' + unresolvedCount + ')' : '') + '</span></a>',
-        '<button type="button" class="shell-mobile-link" id="mobileMoreBtn">' + svgIcon("more") + '<span>' + esc(State.t("more")) + '</span></button>'
+        '<button type="button" class="shell-mobile-link" id="mobileMoreBtn" aria-expanded="false" aria-haspopup="menu" aria-controls="shellMoreMenu">' + svgIcon("more") + '<span>' + esc(State.t("more")) + '</span></button>'
       ].join("\n");
 
       var mobileMoreBtn = document.getElementById("mobileMoreBtn");
@@ -164,13 +179,8 @@
         mobileMoreBtn.addEventListener("click", function (e) {
           e.stopPropagation();
           var menu = document.getElementById("shellMoreMenu");
-          var btn = document.getElementById("shellMoreBtn");
-          if (menu) {
-            var opening = menu.classList.contains("hidden");
-            menu.classList.toggle("hidden", !opening);
-            menu.classList.toggle("is-mobile-sheet", opening);
-            if (btn) btn.setAttribute("aria-expanded", opening ? "true" : "false");
-          }
+          var opening = menu ? menu.classList.contains("hidden") : false;
+          setMoreMenuOpen(opening, true);
         });
       }
     }
@@ -220,17 +230,18 @@
       moreBtn.addEventListener("click", function (e) {
         e.stopPropagation();
         var opening = moreMenu.classList.contains("hidden");
-        moreMenu.classList.toggle("hidden", !opening);
-        moreMenu.classList.remove("is-mobile-sheet");
-        moreBtn.setAttribute("aria-expanded", opening ? "true" : "false");
+        setMoreMenuOpen(opening, false);
       });
+    }
+    if (moreMenu) {
       moreMenu.querySelectorAll("[data-close-more]").forEach(function (item) {
         item.addEventListener("click", function () {
-          moreMenu.classList.add("hidden");
-          moreMenu.classList.remove("is-mobile-sheet");
-          moreBtn.setAttribute("aria-expanded", "false");
+          setMoreMenuOpen(false, false);
         });
       });
+    }
+    if (wasMoreOpen) {
+      setMoreMenuOpen(true, wasMobileSheet);
     }
 
     var upgradeBtn = document.getElementById("menuUpgradeBtn");
@@ -428,7 +439,18 @@
                 ? "/api/auth/upgrade"
                 : "/api/auth/guest";
 
+          var stBeforeAuth = typeof State.getState === "function" ? State.getState() : null;
+          var canMergeLocalOnLogin = !stBeforeAuth
+            || !stBeforeAuth.ownerStudentId
+            || !stBeforeAuth.ownerUsername
+            || String(stBeforeAuth.ownerUsername).toLowerCase() === username.toLowerCase();
+          var localCloudProgress = (typeof State.exportCloudProgress === "function")
+            ? State.exportCloudProgress()
+            : null;
           var payload = activeTab === "guest" ? { username: username } : { username: username, password: password };
+          if (localCloudProgress && (activeTab !== "login" || canMergeLocalOnLogin)) {
+            payload.progress = localCloudProgress;
+          }
           var res = await fetch(endpoint, {
             method: "POST",
             headers: State.authHeaders({ "Content-Type": "application/json" }),
@@ -441,7 +463,13 @@
           }
 
           State.setAuth({ token: data.token, profile: data.profile });
-          if (data.progress) State.applyCloudProgress(data.progress);
+          var cloudProgress = (data.profile && data.profile.progress) || data.progress;
+          if (cloudProgress && typeof State.applyCloudProgress === "function") {
+            State.applyCloudProgress(cloudProgress, {
+              studentId: data.profile && data.profile.studentId,
+              username: data.profile && data.profile.username,
+            });
+          }
           authDialog.close();
           renderHeaderAndNav();
           showToast("Welcome, " + data.profile.username + "!");
@@ -561,12 +589,13 @@
         var btn = document.getElementById("shellMoreBtn");
         var mobileBtn = document.getElementById("mobileMoreBtn");
         if (menu && !menu.classList.contains("hidden")) {
-          if (btn && (btn.contains(e.target) || menu.contains(e.target) || (mobileBtn && mobileBtn.contains(e.target)))) {
+          if ((btn && btn.contains(e.target)) || menu.contains(e.target) || (mobileBtn && mobileBtn.contains(e.target))) {
             return;
           }
           menu.classList.add("hidden");
           menu.classList.remove("is-mobile-sheet");
           if (btn) btn.setAttribute("aria-expanded", "false");
+          if (mobileBtn) mobileBtn.setAttribute("aria-expanded", "false");
         }
       });
 
@@ -577,11 +606,13 @@
         } else if (e.key === "Escape") {
           var menu = document.getElementById("shellMoreMenu");
           var btn = document.getElementById("shellMoreBtn");
+          var mobileBtn = document.getElementById("mobileMoreBtn");
           if (menu) {
             menu.classList.add("hidden");
             menu.classList.remove("is-mobile-sheet");
           }
           if (btn) btn.setAttribute("aria-expanded", "false");
+          if (mobileBtn) mobileBtn.setAttribute("aria-expanded", "false");
         }
       });
 

@@ -179,13 +179,54 @@
             root.ElgoState.syncPendingAttempts().catch(() => null);
           }
           const curPanel = new URLSearchParams(window.location.search).get("panel");
-          if (curPanel === "settings" || curPanel === "leaderboard") route();
+          if (curPanel === "settings" || curPanel === "leaderboard" || curPanel === "saved" || curPanel === "mistakes") {
+            route();
+          }
         })
         .catch(() => null);
     }
+    const syncOnResume = (throttleMs) => {
+      if (!root.ElgoState || !root.ElgoState.getAuth()) return;
+      const st = typeof root.ElgoState.getState === "function" ? root.ElgoState.getState() : null;
+      if (st && st.pendingProgressSync && typeof root.ElgoState.syncProgressToCloud === "function") {
+        root.ElgoState.syncProgressToCloud().catch(() => null);
+      }
+      if (typeof root.ElgoState.pullCloudProgress === "function") {
+        root.ElgoState.pullCloudProgress({ throttleMs: throttleMs }).then((changed) => {
+          if (!changed) return;
+          if (root.ElgoShell && typeof root.ElgoShell.renderHeaderAndNav === "function") {
+            root.ElgoShell.renderHeaderAndNav();
+          }
+          const curPanel = new URLSearchParams(window.location.search).get("panel");
+          if (curPanel === "settings") route();
+        }).catch(() => null);
+      }
+    };
+    document.addEventListener("elgo:progresschange", () => {
+      if (root.ElgoShell && typeof root.ElgoShell.renderHeaderAndNav === "function") {
+        root.ElgoShell.renderHeaderAndNav();
+      }
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      syncOnResume(3000);
+    });
+    window.addEventListener("focus", () => {
+      syncOnResume(4000);
+    });
     window.addEventListener("online", () => {
       if (root.ElgoState && root.ElgoState.getAuth()) {
         root.ElgoState.syncPendingAttempts().catch(() => null);
+        if (typeof root.ElgoState.syncProgressToCloud === "function") {
+          root.ElgoState.syncProgressToCloud({ force: true }).catch(() => null);
+        }
+      }
+    });
+    window.addEventListener("pagehide", () => {
+      if (root.ElgoState && root.ElgoState.getAuth() && root.ElgoState.getState().pendingProgressSync) {
+        if (typeof root.ElgoState.syncProgressToCloud === "function") {
+          root.ElgoState.syncProgressToCloud({ force: true, fromPageHide: true }).catch(() => null);
+        }
       }
     });
     registerServiceWorker();

@@ -1666,3 +1666,447 @@ test("build stamps hashed SW cache revision for instant deploy invalidation and 
   assert.match(shellJs, /getPresenceArea/);
   assert.match(presenceJs, /getHeaders/);
 });
+
+test("ElgoState syncs bookmarks and mistakes across PC and Phone accounts via real worker DB", async () => {
+  const worker = require("../backend/worker");
+  const { createEnv } = require("./helpers/d1-sqlite");
+  const env = createEnv();
+
+  const syncFetchCalls = [];
+  const createDeviceState = () => {
+    const storage = createMemoryStorage();
+    const doc = {
+      documentElement: { dataset: {}, style: {}, lang: "en", dir: "ltr" },
+      readyState: "complete",
+      addEventListener() {},
+      dispatchEvent() {},
+      getElementById: () => null,
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    const mockFetch = async (url, init) => {
+      const target = String(url).startsWith("http") ? String(url) : ("https://elgo.test" + String(url));
+      if (target.includes("/api/auth/sync-progress")) {
+        syncFetchCalls.push({
+          keepalive: Boolean(init && init.keepalive),
+          bytes: init && init.body ? String(init.body).length : 0,
+        });
+      }
+      return worker.handleApiRequest(new Request(target, {
+        method: (init && init.method) || "GET",
+        headers: (init && init.headers) || {},
+        body: init && init.body,
+      }), env);
+    };
+    const { win, ctx } = loadAppScript("src/core/mistakes-store.js", {
+      localStorage: storage,
+      fetch: mockFetch,
+      setTimeout,
+      clearTimeout,
+      document: doc,
+    });
+    for (const rel of ["src/app/model.js", "src/app/state.js"]) {
+      vm.runInContext(fs.readFileSync(path.join(ROOT, rel), "utf8"), ctx, { filename: rel });
+    }
+    return win.ElgoState;
+  };
+
+  // Register account on PC
+  const regRes = await worker.handleApiRequest(new Request("https://elgo.test/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "CrossDeviceStudent", password: "strong-password-123" }),
+  }), env);
+  const regData = await regRes.json();
+  assert.equal(regData.ok, true);
+
+  // Device 1 (PC)
+  const pcState = createDeviceState();
+  pcState.setAuth({ token: regData.token, profile: regData.profile });
+  const q1 = { id: "Q1", internalId: "na::quiz::lec1::Q1", subjectId: "na", question: "Truncation error?", correctOptionId: "A", options: [{ id: "A", text: "Taylor series" }] };
+  const q2 = { id: "Q2", internalId: "na::quiz::lec1::Q2", subjectId: "na", question: "Roundoff error?", correctOptionId: "B" };
+  const q3 = { id: "Q3", internalId: "na::quiz::lec2::Q3", subjectId: "na", question: "Bisection convergence?", correctOptionId: "C" };
+
+  assert.equal(pcState.toggleBookmark(q1, { subjectId: "na", subjectName: "Numerical Analysis", collectionId: "lec1" }), true);
+  pcState.recordMistake(q2, "A", { subjectId: "na", subjectName: "Numerical Analysis", collectionId: "lec1" });
+  pcState.recordMistake(q3, "A", { subjectId: "na", subjectName: "Numerical Analysis", collectionId: "lec2" });
+  pcState.resolveMistake(q3.internalId);
+
+  const pcPush = await pcState.syncProgressToCloud({ force: true });
+  assert.equal(pcPush.ok, true);
+
+  // Device 2 (Phone) already signed into the same account
+  const phoneState = createDeviceState();
+  phoneState.setAuth({ token: regData.token, profile: regData.profile });
+  await phoneState.refreshSession();
+
+  assert.equal(phoneState.isBookmarked(q1.internalId), true, "Phone pulls bookmark created on PC");
+  assert.equal(phoneState.getMistakes("na").length, 2, "Phone pulls both mistakes created on PC");
+  assert.equal(phoneState.getMistakes("na", { status: "unresolved" }).length, 1);
+  assert.equal(phoneState.getMistakes("na", { status: "resolved" }).length, 1);
+
+  // Phone removes bookmark Q1, adds bookmark Q3, deletes mistake Q3, resolves mistake Q2 -> syncs back to PC
+  assert.equal(phoneState.toggleBookmark(q1, {}), false);
+  assert.equal(phoneState.toggleBookmark(q3, { subjectId: "na", subjectName: "Numerical Analysis", collectionId: "lec2" }), true);
+  phoneState.clearMistake(q3.internalId);
+  phoneState.resolveMistake(q2.internalId);
+  assert.equal((await phoneState.syncProgressToCloud({ force: true })).ok, true);
+
+  await pcState.pullCloudProgress();
+  assert.equal(pcState.isBookmarked(q1.internalId), false, "Removed bookmark on Phone stays deleted on PC (no resurrection)");
+  assert.equal(pcState.isBookmarked(q3.internalId), true, "New bookmark on Phone syncs back to PC");
+  const pcMistakes = pcState.getMistakes("na");
+  assert.equal(pcMistakes.length, 1, "Deleted mistake on Phone stays removed on PC");
+  assert.equal(pcMistakes[0].resolved, true, "Resolved status from Phone updates PC");
+
+  // Clear all mistakes on PC -> clears on Phone; subsequent new mistake on Phone survives
+  pcState.clearAllMistakes();
+  assert.equal((await pcState.syncProgressToCloud({ force: true })).ok, true);
+  await phoneState.pullCloudProgress();
+  assert.equal(phoneState.getMistakes("na").length, 0, "Clear All Mistakes syncs to Phone");
+
+  phoneState.recordMistake(q3, "B", { subjectId: "na", subjectName: "Numerical Analysis", collectionId: "lec2" });
+  assert.equal((await phoneState.syncProgressToCloud({ force: true })).ok, true);
+  await pcState.pullCloudProgress();
+  assert.equal(pcState.getMistakes("na").length, 1, "New mistake after clearAll syncs back cleanly");
+
+  // Device 3 (Fresh browser logging in manually applies data.profile.progress)
+  const freshLoginRes = await worker.handleApiRequest(new Request("https://elgo.test/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "CrossDeviceStudent", password: "strong-password-123" }),
+  }), env);
+  const freshLoginData = await freshLoginRes.json();
+  assert.ok(freshLoginData.profile && freshLoginData.profile.progress);
+  const freshDevice = createDeviceState();
+  freshDevice.setAuth({ token: freshLoginData.token, profile: freshLoginData.profile });
+  freshDevice.applyCloudProgress(freshLoginData.profile.progress, {
+    studentId: freshLoginData.profile.studentId,
+    username: freshLoginData.profile.username,
+  });
+  assert.equal(freshDevice.isBookmarked(q3.internalId), true);
+  assert.equal(freshDevice.getMistakes("na").length, 1);
+
+  // Switching to a different student replaces instead of leaking Student 1's bookmarks/mistakes
+  const otherRes = await worker.handleApiRequest(new Request("https://elgo.test/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "SecondStudent", password: "other-password-123" }),
+  }), env);
+  const otherData = await otherRes.json();
+  freshDevice.setAuth({ token: otherData.token, profile: otherData.profile });
+  await freshDevice.refreshSession();
+  assert.equal(freshDevice.isBookmarked(q3.internalId), false, "Switching accounts clears previous student's bookmarks");
+  assert.equal(freshDevice.getMistakes("na").length, 0, "Switching accounts clears previous student's mistakes");
+
+  // Large batch (> 64 KiB keepalive limit: 85 bookmarks + 90 mistakes) must sync cleanly without keepalive abort
+  const bulkPc = createDeviceState();
+  const bulkPhone = createDeviceState();
+  bulkPc.setAuth({ token: otherData.token, profile: otherData.profile });
+  bulkPhone.setAuth({ token: otherData.token, profile: otherData.profile });
+  const padText = "Long Numerical Analysis question prompt ".repeat(14);
+  for (let i = 1; i <= 85; i++) {
+    const bq = {
+      id: "NA_Q" + i,
+      internalId: "numerical-analysis::quiz::na-bulk::NA_Q" + i,
+      subjectId: "numerical-analysis",
+      question: padText + "#" + i,
+      correctOptionId: "A",
+      options: [{ id: "A", text: "Correct choice " + i }],
+    };
+    bulkPc.toggleBookmark(bq, { subjectId: "numerical-analysis", subjectName: "Numerical Analysis", collectionId: "na-bulk" });
+  }
+  for (let j = 1; j <= 90; j++) {
+    bulkPc.recordMistake({
+      id: "NA_M" + j,
+      internalId: "numerical-analysis::quiz::na-m::NA_M" + j,
+      subjectId: "numerical-analysis",
+      question: padText + "Mistake #" + j,
+      correctOptionId: "B",
+    }, "C", { subjectId: "numerical-analysis", subjectName: "Numerical Analysis", collectionId: "na-m" });
+  }
+  const callsBefore = syncFetchCalls.length;
+  const bulkSyncRes = await bulkPc.syncProgressToCloud({ force: true, fromPageHide: true });
+  assert.equal(bulkSyncRes.ok, true, "Large progress sync (>64KiB) succeeds cleanly");
+  const bulkCall = syncFetchCalls[syncFetchCalls.length - 1];
+  assert.ok(syncFetchCalls.length > callsBefore && bulkCall.bytes > 65536, "Test exercises >64 KiB payload");
+  assert.equal(bulkCall.keepalive, false, "Must never use keepalive=true above browser 60KB threshold");
+
+  await bulkPhone.refreshSession();
+  const phoneBms = bulkPhone.getState().bookmarks || [];
+  assert.equal(phoneBms.filter((b) => b.subjectId === "numerical-analysis").length, 85, "All 85 Numerical Analysis bookmarks reach Phone");
+  assert.equal(bulkPhone.getMistakes("numerical-analysis").length, 90, "All 90 mistakes reach Phone");
+
+  // Sparse bookmark on one device must never overwrite rich question/answer metadata on another
+  bulkPhone.applyCloudProgress({
+    bookmarks: [{ id: "NA_Q1", internalId: "numerical-analysis::quiz::na-bulk::NA_Q1", subjectId: "numerical-analysis", question: "", correctAnswer: "", savedAt: new Date(Date.now() + 5000).toISOString() }],
+  });
+  const preservedQ1 = (bulkPhone.getState().bookmarks || []).find((b) => b.internalId === "numerical-analysis::quiz::na-bulk::NA_Q1");
+  assert.ok(preservedQ1 && preservedQ1.question && preservedQ1.correctAnswer, "Rich bookmark text/answer preserved over sparse update");
+});
+
+test("Mobile three-dots menu (#mobileMoreBtn) toggles #shellMoreMenu visibly and keeps wrapper unhidden in 680px CSS", () => {
+  const appCss = fs.readFileSync(path.join(ROOT, "src/styles/app.css"), "utf8");
+  const panelsJs = fs.readFileSync(path.join(ROOT, "src/app/panels.js"), "utf8");
+  const mobileMediaMatch = appCss.match(/@media\s*\(max-width:\s*680px\)\s*\{[\s\S]*$/);
+  assert.ok(mobileMediaMatch, "Expected mobile 680px media query in src/styles/app.css");
+  const mobileCss = mobileMediaMatch[0];
+  assert.match(mobileCss, /\.shell-more-trigger/, "Should hide only .shell-more-trigger on mobile, not .shell-menu");
+  assert.match(mobileCss, /\.shell-menu\s*\{\s*display:\s*contents;/, "Should keep .shell-menu unhidden with display: contents on mobile");
+  assert.match(mobileCss, /\.shell-menu-panel\.is-mobile-sheet[\s\S]*z-index:\s*65;/);
+  assert.match(mobileCss, /\.panel-subtitle\s*\{\s*display:\s*none;/, "Mobile panels hide verbose subtitles to avoid clutter");
+  assert.match(mobileCss, /\.filter-bar\.is-mobile-scroll/, "Mobile course pills use clean horizontal scroll bar");
+  assert.doesNotMatch(panelsJs, /id="savedCourseFilter"/, "Removed duplicate saved course dropdown in favor of single pill strip");
+  assert.match(panelsJs, /hydrateIncompleteItems/);
+  assert.match(panelsJs, /#savedSyncBtn/);
+  assert.match(panelsJs, /#mistakesSyncBtn/);
+
+  const makeClassList = (initial) => {
+    const set = new Set(initial || []);
+    return {
+      contains: (c) => set.has(c),
+      add: (...cs) => cs.forEach((c) => set.add(c)),
+      remove: (...cs) => cs.forEach((c) => set.delete(c)),
+      toggle: (c, force) => {
+        const next = force === undefined ? !set.has(c) : Boolean(force);
+        if (next) set.add(c);
+        else set.delete(c);
+        return next;
+      },
+    };
+  };
+  const makeEl = (id, cls) => {
+    const attrs = {};
+    const listeners = {};
+    return {
+      id,
+      classList: makeClassList(cls),
+      attributes: attrs,
+      setAttribute: (k, v) => { attrs[k] = String(v); },
+      getAttribute: (k) => (k in attrs ? attrs[k] : null),
+      addEventListener: (t, fn) => { (listeners[t] = listeners[t] || []).push(fn); },
+      dispatchClick(target) {
+        let stopped = false;
+        const ev = { target: target || this, stopPropagation: () => { stopped = true; } };
+        (listeners.click || []).forEach((fn) => fn(ev));
+        return stopped;
+      },
+      contains(node) { return node === this; },
+      querySelectorAll: () => [],
+    };
+  };
+
+  const els = new Map();
+  let closeMoreItems = [];
+  const shellHeader = {
+    _html: "",
+    set innerHTML(v) {
+      this._html = String(v);
+      const moreBtn = makeEl("shellMoreBtn", ["shell-icon-btn", "shell-more-trigger"]);
+      const settingsItem = makeEl("menuSettingsItem", ["shell-menu-item"]);
+      settingsItem.setAttribute("data-close-more", "");
+      closeMoreItems = [settingsItem];
+      const moreMenu = makeEl("shellMoreMenu", ["shell-menu-panel", "hidden"]);
+      moreMenu.contains = (t) => t === moreMenu || t === settingsItem;
+      moreMenu.querySelectorAll = (sel) => (sel === "[data-close-more]" ? closeMoreItems : []);
+      els.set("shellMoreBtn", moreBtn);
+      els.set("shellMoreMenu", moreMenu);
+      assert.match(this._html, /href="\/\?panel=settings"/);
+    },
+  };
+  const bottomNav = {
+    _html: "",
+    set innerHTML(v) {
+      this._html = String(v);
+      const mobileMoreBtn = makeEl("mobileMoreBtn", ["shell-mobile-link"]);
+      mobileMoreBtn.contains = (t) => t === mobileMoreBtn;
+      els.set("mobileMoreBtn", mobileMoreBtn);
+    },
+  };
+  els.set("shellHeader", shellHeader);
+  els.set("shellBottomNav", bottomNav);
+  els.set("siteBannerHost", { innerHTML: "" });
+
+  const docListeners = {};
+  const { win, ctx } = loadAppScript("src/app/theme.js", {
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+  });
+  ctx.document.getElementById = (id) => els.get(id) || null;
+  ctx.document.addEventListener = (t, fn) => { (docListeners[t] = docListeners[t] || []).push(fn); };
+  win.ElgoState = {
+    t: (k) => k,
+    getState: () => ({ bookmarks: [] }),
+    getAuth: () => null,
+    getCatalog: () => ({ subjects: [] }),
+    getMistakes: () => [],
+    getSiteSettings: () => ({}),
+  };
+  win.ElgoTheme = { getLang: () => "en", getTheme: () => "evening", isMotionPaused: () => false };
+  vm.runInContext(fs.readFileSync(path.join(ROOT, "src/app/shell.js"), "utf8"), ctx, { filename: "src/app/shell.js" });
+
+  win.ElgoShell.init();
+  const mobileBtn = els.get("mobileMoreBtn");
+  const menu = els.get("shellMoreMenu");
+  assert.ok(mobileBtn && menu);
+  assert.equal(menu.classList.contains("hidden"), true);
+
+  // Tap mobile three-dots opens mobile sheet cleanly
+  mobileBtn.dispatchClick(mobileBtn);
+  assert.equal(menu.classList.contains("hidden"), false, "Tapping #mobileMoreBtn should open #shellMoreMenu");
+  assert.equal(menu.classList.contains("is-mobile-sheet"), true);
+  assert.equal(mobileBtn.getAttribute("aria-expanded"), "true");
+
+  // Selecting Settings item closes the mobile sheet cleanly
+  closeMoreItems[0].dispatchClick(closeMoreItems[0]);
+  assert.equal(menu.classList.contains("hidden"), true);
+  assert.equal(menu.classList.contains("is-mobile-sheet"), false);
+  assert.equal(mobileBtn.getAttribute("aria-expanded"), "false");
+
+  // Re-open then press Escape closes cleanly
+  mobileBtn.dispatchClick(mobileBtn);
+  assert.equal(menu.classList.contains("hidden"), false);
+  (docListeners.keydown || []).forEach((fn) => fn({ key: "Escape" }));
+  assert.equal(menu.classList.contains("hidden"), true);
+  assert.equal(mobileBtn.getAttribute("aria-expanded"), "false");
+
+  // Re-open then click outside closes cleanly; click inside menu stays open
+  mobileBtn.dispatchClick(mobileBtn);
+  assert.equal(menu.classList.contains("hidden"), false);
+  (docListeners.click || []).forEach((fn) => fn({ target: closeMoreItems[0] }));
+  assert.equal(menu.classList.contains("hidden"), false);
+  (docListeners.click || []).forEach((fn) => fn({ target: {} }));
+  assert.equal(menu.classList.contains("hidden"), true);
+  assert.equal(mobileBtn.getAttribute("aria-expanded"), "false");
+});
+
+test("caching headers, sw no-cache, CSS grid containment, sync error surfacing, 413 retry, and legacy merge work cleanly", async () => {
+  const headersSrc = fs.readFileSync(path.join(ROOT, "_headers"), "utf8");
+  assert.match(headersSrc, /\/src\/\*\s*\r?\n\s*Cache-Control:\s*public,\s*max-age=0,\s*must-revalidate/i);
+
+  const swSrc = fs.readFileSync(path.join(ROOT, "sw.js"), "utf8");
+  assert.match(swSrc, /new Request\(req,\s*\{\s*cache:\s*["']no-cache["']\s*\}\)/);
+
+  const appCss = fs.readFileSync(path.join(ROOT, "src/styles/app.css"), "utf8");
+  assert.match(appCss, /html\s*\{[\s\S]*?overflow-x:\s*clip;/);
+  assert.match(appCss, /\.hub-panel\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(appCss, /\.panel-item\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(appCss, /\.workspace-head\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  const mobileMediaStart = appCss.indexOf("@media (max-width: 680px)");
+  assert.ok(mobileMediaStart > 0);
+  const mobileCss = appCss.slice(mobileMediaStart);
+  assert.doesNotMatch(mobileCss, /\.panel-actions-bar\s*\{[^}]*flex-wrap:\s*nowrap/i);
+  assert.match(mobileCss, /\.shell-menu-panel\.is-mobile-sheet\s*\{[^}]*max-width:\s*calc\(100vw\s*-\s*20px\)/);
+
+  const playerCss = fs.readFileSync(path.join(ROOT, "src/styles/player.css"), "utf8");
+  assert.match(playerCss, /\.player-wrap\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(playerCss, /\.question-card\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(playerCss, /@media\s*\(max-width:\s*820px\)\s*\{[\s\S]*?\.player-layout\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+
+  // 1) Backend 413 on oversized progress payload + client compact retry
+  const { createEnv } = require("./helpers/d1-sqlite");
+  const env = createEnv();
+  const worker = require("../backend/worker");
+  const regRes = await worker.handleApiRequest(new Request("https://elgo.test/api/auth/register", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: "SyncDiagUser", password: "strong-password-123" }),
+  }), env);
+  const regData = await regRes.json();
+  assert.equal(regData.ok, true);
+
+  const overRes = await worker.handleApiRequest(new Request("https://elgo.test/api/auth/sync-progress", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: "Bearer " + regData.token },
+    body: JSON.stringify({ progress: { blob: "z".repeat(420 * 1024) } }),
+  }), env);
+  assert.equal(overRes.status, 413, "Oversized progress must return HTTP 413 instead of silent 200 wipe");
+
+  // 2) Client state tests: 413 auto-compact retry, 401/offline errors surfaced, legacy keys merged
+  let mode = "413_then_ok";
+  let seenBodies = [];
+  const mem = createMemoryStorage();
+  mem.setItem("elgo_app_state_v1", JSON.stringify({
+    bookmarks: [],
+    deletedBookmarks: { "subj::q::Q_DEL": "2026-11-16T10:00:00.000Z" },
+    mistakes: [],
+    deletedMistakes: {},
+    attemptHistory: [],
+  }));
+  mem.setItem("mcq_bank_bookmarks_v1", JSON.stringify([
+    { id: "Q_KEEP", internalId: "subj::q::Q_KEEP", subjectId: "subj", question: "Keep me", savedAt: "2026-11-15T10:00:00.000Z" },
+    { id: "Q_DEL", internalId: "subj::q::Q_DEL", subjectId: "subj", question: "Deleted tombstone", savedAt: "2026-11-15T09:00:00.000Z" },
+  ]));
+  mem.setItem("mcq_bank_mistakes_v1", JSON.stringify([
+    { id: "M_LEGACY", internalId: "subj::q::M_LEGACY", subjectId: "subj", question: "Legacy miss", missCount: 2, updatedAt: "2026-11-15T10:00:00.000Z" },
+  ]));
+
+  const doc = {
+    documentElement: { dataset: {}, style: {}, lang: "en", dir: "ltr" },
+    readyState: "complete",
+    addEventListener() {},
+    dispatchEvent() {},
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  const { win, ctx } = loadAppScript("src/core/mistakes-store.js", {
+    localStorage: mem,
+    fetch: async (url, init) => {
+      const target = String(url);
+      if (target.includes("/api/auth/sync-progress")) {
+        seenBodies.push(JSON.parse(init.body));
+        if (mode === "413_then_ok" && seenBodies.length === 1) {
+          return new Response(JSON.stringify({ ok: false, error: "Progress data too large." }), { status: 413, headers: { "Content-Type": "application/json" } });
+        }
+        if (mode === "401") {
+          return new Response(JSON.stringify({ ok: false, error: "Session expired" }), { status: 401, headers: { "Content-Type": "application/json" } });
+        }
+        if (mode === "offline") {
+          throw new Error("Network down");
+        }
+        return new Response(JSON.stringify({ ok: true, progress: JSON.parse(init.body).progress }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (target.includes("/api/auth/me")) {
+        if (mode === "401") {
+          return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), { status: 401, headers: { "Content-Type": "application/json" } });
+        }
+        return new Response(JSON.stringify({ ok: true, profile: { studentId: regData.profile.studentId, username: regData.profile.username, progress: seenBodies[seenBodies.length - 1]?.progress || {} } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+    },
+    setTimeout,
+    clearTimeout,
+    document: doc,
+  });
+  for (const rel of ["src/app/model.js", "src/app/state.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(ROOT, rel), "utf8"), ctx, { filename: rel });
+  }
+  const st = win.ElgoState;
+  st.setAuth({ token: regData.token, profile: regData.profile });
+
+  const localNow = st.getState();
+  assert.equal(localNow.bookmarks.some((b) => b.internalId === "subj::q::Q_KEEP"), true, "Legacy bookmark merges even when elgo_app_state_v1 already exists");
+  assert.equal(localNow.bookmarks.some((b) => b.internalId === "subj::q::Q_DEL"), false, "Tombstoned bookmark is not resurrected from legacy storage");
+  assert.equal(localNow.mistakes.some((m) => m.internalId === "subj::q::M_LEGACY"), true, "Legacy mistake merges cleanly");
+
+  const retryRes = await st.syncNow();
+  assert.equal(retryRes.ok, true, "413 auto-retries compact payload and succeeds");
+  assert.equal(seenBodies.length, 2, "Second compact request was issued after 413");
+  assert.equal(seenBodies[1].progress.bookmarks[0].question, undefined, "Compact retry strips heavy question text while preserving IDs");
+  assert.equal(st.getSyncStatus().ok, true);
+
+  mode = "offline";
+  const offRes = await st.syncNow();
+  assert.equal(offRes.ok, false);
+  assert.equal(offRes.offline, true);
+  assert.match(offRes.error, /Network down/);
+  assert.equal(st.getSyncStatus().ok, false);
+
+  mode = "401";
+  const unauthRes = await st.syncNow();
+  assert.equal(unauthRes.ok, false);
+  assert.equal(unauthRes.unauthorized, true);
+  assert.equal(unauthRes.status, 401);
+  assert.ok(unauthRes.error.length > 0);
+});

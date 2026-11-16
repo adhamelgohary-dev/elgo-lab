@@ -32,6 +32,45 @@
     }
   }
 
+  function bindPanelSyncLifecycle(container, sentinelSelector, kind, catalog, paint) {
+    var state = root.ElgoState;
+    var isActive = function () {
+      return container && container.isConnected !== false && Boolean(container.querySelector(sentinelSelector));
+    };
+    if (typeof document !== "undefined" && container) {
+      if (container._elgoProgressHandler) {
+        document.removeEventListener("elgo:progresschange", container._elgoProgressHandler);
+      }
+      var handler = function () {
+        if (!isActive()) {
+          document.removeEventListener("elgo:progresschange", handler);
+          if (container._elgoProgressHandler === handler) container._elgoProgressHandler = null;
+          return;
+        }
+        paint();
+        hydrateIncompleteItems(kind, catalog).then(function (enriched) {
+          if (enriched && isActive()) paint();
+        }).catch(function () {});
+      };
+      container._elgoProgressHandler = handler;
+      document.addEventListener("elgo:progresschange", handler);
+    }
+    hydrateIncompleteItems(kind, catalog).then(function (enriched) {
+      if (enriched && isActive()) paint();
+    }).catch(function () {});
+    if (state.getAuth() && typeof state.pullCloudProgress === "function") {
+      state.pullCloudProgress({ throttleMs: 1000 }).then(function (changed) {
+        if (changed && isActive()) {
+          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+          paint();
+          hydrateIncompleteItems(kind, catalog).then(function (enriched) {
+            if (enriched && isActive()) paint();
+          }).catch(function () {});
+        }
+      }).catch(function () {});
+    }
+  }
+
   async function hydrateQuestionsFromSubjects(items, catalog) {
     var state = root.ElgoState;
     var bySubject = new Map();
@@ -76,6 +115,91 @@
     return { subject: subjObj, questions: collected };
   }
 
+  async function hydrateIncompleteItems(kind, catalog) {
+    var state = root.ElgoState;
+    var st = state.getState();
+    var list = kind === "bookmarks" ? (st.bookmarks || []) : (st.mistakes || []);
+    if (!list.length) return false;
+
+    var subjectsById = new Map();
+    (catalog && catalog.subjects || []).forEach(function (s) {
+      if (s && s.id) subjectsById.set(s.id, s);
+    });
+
+    var missingSubjects = new Set();
+    var needsAny = false;
+    list.forEach(function (it) {
+      if (!it || typeof it !== "object") return;
+      var sid = it.subjectId || (String(it.internalId || "").indexOf("::") >= 0 ? String(it.internalId).split("::")[0] : "");
+      var missingText = !it.question || !it.subjectName || (kind === "bookmarks" && (!it.correctAnswer || !it.sourceLabel));
+      if (missingText) {
+        needsAny = true;
+        if (sid) missingSubjects.add(sid);
+      }
+    });
+    if (!needsAny || !missingSubjects.size) return false;
+
+    var qByKey = new Map();
+    for (var sid of missingSubjects) {
+      try {
+        var qs = await state.loadQuestionsForSources(sid, []);
+        (qs || []).forEach(function (q) {
+          if (!q) return;
+          if (q.internalId) qByKey.set(q.internalId, q);
+          if (q.id) qByKey.set(sid + "::" + q.id, q);
+        });
+      } catch (_err) {
+        // Ignore single subject load failure offline
+      }
+    }
+
+    var changed = false;
+    var latest = state.getState();
+    var latestList = kind === "bookmarks" ? (latest.bookmarks || []) : (latest.mistakes || []);
+    var enriched = latestList.map(function (it) {
+      if (!it || typeof it !== "object") return it;
+      var sid = it.subjectId || (String(it.internalId || "").indexOf("::") >= 0 ? String(it.internalId).split("::")[0] : "");
+      var q = qByKey.get(it.internalId) || (sid && it.id ? qByKey.get(sid + "::" + it.id) : null);
+      var subj = subjectsById.get(sid);
+      var subjName = subj ? state.getSubjectName(subj) : (it.subjectName || "");
+      var next = Object.assign({}, it);
+      var itemChanged = false;
+      if (sid && !next.subjectId) { next.subjectId = sid; itemChanged = true; }
+      if (subjName && !next.subjectName) { next.subjectName = subjName; itemChanged = true; }
+      if (q) {
+        var qText = q.question || q.text || "";
+        if (qText && !next.question) { next.question = qText; itemChanged = true; }
+        if (q.collectionTitle && !next.sourceLabel) { next.sourceLabel = q.collectionTitle; itemChanged = true; }
+        if (q.collectionId && !next.quizId) { next.quizId = q.collectionId; itemChanged = true; }
+        if (q.correctOptionId && !next.correctOptionId) { next.correctOptionId = q.correctOptionId; itemChanged = true; }
+        if (kind === "bookmarks" && !next.correctAnswer && Array.isArray(q.options)) {
+          var rightOpt = q.options.find(function (o) { return o && o.id === (next.correctOptionId || q.correctOptionId); });
+          if (rightOpt) {
+            next.correctAnswer = rightOpt.id + ") " + rightOpt.text;
+            itemChanged = true;
+          }
+        }
+        if ((!next.images || !next.images.length) && root.ElgoModel && typeof root.ElgoModel.getQuestionImages === "function") {
+          var qImgs = root.ElgoModel.getQuestionImages(q);
+          if (qImgs && qImgs.length) {
+            next.images = qImgs;
+            if (!next.image && qImgs[0] && qImgs[0].url) next.image = qImgs[0].url;
+            itemChanged = true;
+          }
+        }
+      }
+      if (itemChanged) changed = true;
+      return next;
+    });
+
+    if (!changed) return false;
+    var fresh = state.getState();
+    if (kind === "bookmarks") fresh.bookmarks = enriched;
+    else fresh.mistakes = enriched;
+    state.saveState(fresh);
+    return true;
+  }
+
   function renderPanelQuestionImages(item) {
     var Model = root.ElgoModel;
     var imgs = (Model && typeof Model.getQuestionImages === "function")
@@ -107,6 +231,7 @@
     var selectedIds = new Set();
 
     function paint() {
+      bookmarks = state.getState().bookmarks || [];
       var visible = filterCourse === "all"
         ? bookmarks
         : bookmarks.filter(function (b) { return b.subjectId === filterCourse; });
@@ -125,19 +250,13 @@
 
       var visibleSelected = visible.filter(function (b) { return selectedIds.has(b.internalId || b.id); });
 
-      var courseOptions = (catalog.subjects || [])
-        .map(function (s) {
-          var cnt = countByCourse[s.id] || 0;
-          return '<option value="' + esc(s.id) + '"' + (filterCourse === s.id ? " selected" : "") + '>' + esc(state.getSubjectName(s)) + (cnt ? (" (" + cnt + ")") : "") + '</option>';
-        })
-        .join("");
-
       var coursePillsHtml = (catalog.subjects || []).filter(function (s) { return (countByCourse[s.id] || 0) > 0; }).map(function (s) {
         return '<button type="button" class="filter-pill' + (filterCourse === s.id ? " is-active" : "") + '" data-saved-course-pill="' + esc(s.id) + '">' + esc(state.getSubjectName(s)) + ' (' + countByCourse[s.id] + ')</button>';
       }).join("");
 
       var currentCourseObj = (catalog.subjects || []).find(function (s) { return s.id === filterCourse; });
       var viewLabel = currentCourseObj ? state.getSubjectName(currentCourseObj) : txt("All Saved", "كل المحفوظين");
+      var isSignedIn = Boolean(state.getAuth());
 
       container.innerHTML = [
         '<section class="hub-panel">',
@@ -146,41 +265,42 @@
         '    <span>/</span>',
         '    <span>' + esc(state.t("saved")) + '</span>',
         '  </div>',
-        '  <div class="dialog-head" style="flex-wrap:wrap;gap:12px;">',
-        '    <div>',
-        '      <h1 style="margin:0;font-size:1.35rem;">★ ' + esc(state.t("saved")) + ' (' + bookmarks.length + ')</h1>',
-        '      <p class="question-meta" style="margin:4px 0 0;">' + esc(txt("Retake all saved questions in any course or pick specific ones freely — they stay saved until you remove them.", "عيد كل الأسئلة المحفوظة للمادة أو اختار شوية منهم براحتك — يفضلوا محفوظين لحد ما تشيلهم بنفسك.")) + '</p>',
+        '  <div class="dialog-head panel-header-bar">',
+        '    <div class="panel-title-wrap">',
+        '      <div class="panel-title-row">',
+        '        <h1 style="margin:0;font-size:1.3rem;">★ ' + esc(state.t("saved")) + ' (' + bookmarks.length + ')</h1>',
+                 isSignedIn ? '<button type="button" class="secondary panel-chip-btn" id="savedSyncBtn" title="' + esc(txt("Sync now", "مزامنة الآن")) + '">⟳ ' + esc(txt("Sync", "مزامنة")) + '</button>' : '',
+        '      </div>',
+        '      <p class="question-meta panel-subtitle" style="margin:4px 0 0;">' + esc(txt("Retake all saved questions in any course or pick specific ones freely.", "عيد كل الأسئلة المحفوظة للمادة أو اختار شوية منهم براحتك.")) + '</p>',
         '    </div>',
-        '    <div class="inline" style="flex-wrap:wrap;">',
-               visible.length ? '<button type="button" class="primary" id="practiceSavedBtn">' + esc(txt("▶ Retake All (" + visible.length + ")", "▶ إعادة الكل (" + visible.length + ")")) + '</button>' : '',
-               visible.length ? '<button type="button" class="secondary" id="practiceSelectedSavedBtn"' + (visibleSelected.length === 0 ? " disabled" : "") + '>' + esc(txt("▶ Retake Selected (" + visibleSelected.length + ")", "▶ إعادة المختارين (" + visibleSelected.length + ")")) + '</button>' : '',
+        '    <div class="panel-actions-bar">',
+               visible.length ? '<button type="button" class="primary" id="practiceSavedBtn">' + esc(txt("▶ Retake (" + visible.length + ")", "▶ إعادة (" + visible.length + ")")) + '</button>' : '',
+               visible.length ? '<button type="button" class="secondary" id="practiceSelectedSavedBtn"' + (visibleSelected.length === 0 ? " disabled" : "") + '>' + esc(txt("▶ Selected (" + visibleSelected.length + ")", "▶ المختار (" + visibleSelected.length + ")")) + '</button>' : '',
         '    </div>',
-        '  </div>',
-        '  <div class="panel-tools" style="flex-wrap:wrap;gap:10px;align-items:center;">',
-        '    <div class="inline" style="flex-wrap:wrap;">',
-        '      <label for="savedCourseFilter" style="font-size:0.85rem;color:var(--muted);">' + esc(txt("Course:", "المادة:")) + '</label>',
-        '      <select id="savedCourseFilter"><option value="all">' + esc(state.t("allCourses")) + ' (' + bookmarks.length + ')</option>' + courseOptions + '</select>',
-        '      <select id="savedModeSelect" aria-label="Retake Mode" style="padding:7px 10px;border-radius:9px;border:1px solid var(--line);background:var(--tile);color:var(--ink);">',
-        '        <option value="practice"' + (savedMode === "practice" ? " selected" : "") + '>' + esc(txt("Practice Mode (Immediate Check)", "تدريب (صح/غلط فوراً)")) + '</option>',
-        '        <option value="study"' + (savedMode === "study" ? " selected" : "") + '>' + esc(txt("Study Mode (Answers & Notes)", "مذاكرة (الإجابات والشرح)")) + '</option>',
-        '        <option value="test"' + (savedMode === "test" ? " selected" : "") + '>' + esc(txt("Self-Exam Mode (Score at End)", "اختبار تجريبي (النتيجة في الآخر)")) + '</option>',
-        '      </select>',
-        '      <label style="display:inline-flex;align-items:center;gap:6px;font-size:0.85rem;cursor:pointer;">',
-        '        <input type="checkbox" id="savedShuffleCheck"' + (savedShuffle ? " checked" : "") + '>',
-        '        <span>' + esc(txt("Shuffle order", "ترتيب عشوائي")) + '</span>',
-        '      </label>',
-        '    </div>',
-             visible.length ? [
-               '<div class="inline">',
-               '  <button type="button" class="quiet" id="savedSelectAllBtn">' + esc(txt("Select All (" + visible.length + ")", "تحديد الكل (" + visible.length + ")")) + '</button>',
-               '  <button type="button" class="quiet" id="savedClearSelBtn"' + (visibleSelected.length === 0 ? " disabled" : "") + '>' + esc(txt("Clear Selection", "إلغاء التحديد")) + '</button>',
-               '</div>'
-             ].join("") : '',
         '  </div>',
            bookmarks.length ? [
-             '<div class="filter-bar" aria-label="Saved Courses">',
-             '  <button type="button" class="filter-pill' + (filterCourse === "all" ? " is-active" : "") + '" data-saved-course-pill="all">' + esc(txt("All Courses", "كل المواد")) + ' (' + bookmarks.length + ')</button>',
+             '<div class="filter-bar is-mobile-scroll" aria-label="Saved Courses">',
+             '  <button type="button" class="filter-pill' + (filterCourse === "all" ? " is-active" : "") + '" data-saved-course-pill="all">' + esc(txt("All", "الكل")) + ' (' + bookmarks.length + ')</button>',
                 coursePillsHtml,
+             '</div>'
+           ].join("\n") : '',
+           visible.length ? [
+             '<div class="panel-tools saved-tools-bar">',
+             '  <div class="saved-controls-row">',
+             '    <select id="savedModeSelect" aria-label="Retake Mode">',
+             '      <option value="practice"' + (savedMode === "practice" ? " selected" : "") + '>' + esc(txt("Practice · Instant", "تدريب · فوري")) + '</option>',
+             '      <option value="study"' + (savedMode === "study" ? " selected" : "") + '>' + esc(txt("Study · Answers", "مذاكرة · بالإجابات")) + '</option>',
+             '      <option value="test"' + (savedMode === "test" ? " selected" : "") + '>' + esc(txt("Self-Exam · End Score", "اختبار · في الآخر")) + '</option>',
+             '    </select>',
+             '    <label class="compact-check">',
+             '      <input type="checkbox" id="savedShuffleCheck"' + (savedShuffle ? " checked" : "") + '>',
+             '      <span>' + esc(txt("Shuffle", "عشوائي")) + '</span>',
+             '    </label>',
+             '    <div class="saved-sel-btns">',
+             '      <button type="button" class="quiet panel-chip-btn" id="savedSelectAllBtn">' + esc(txt("All (" + visible.length + ")", "الكل (" + visible.length + ")")) + '</button>',
+             '      <button type="button" class="quiet panel-chip-btn" id="savedClearSelBtn"' + (visibleSelected.length === 0 ? " disabled" : "") + '>' + esc(txt("Clear", "مسح")) + '</button>',
+             '    </div>',
+             '  </div>',
              '</div>'
            ].join("\n") : '',
            visible.length === 0 ? [
@@ -196,16 +316,16 @@
                var checked = selectedIds.has(key);
                return [
                  '<article class="panel-item hub-review" data-bookmark-idx="' + idx + '">',
-                 '  <div class="dialog-head">',
-                 '    <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:0.84rem;">',
+                 '  <div class="panel-item-head">',
+                 '    <label class="panel-item-meta-label">',
                  '      <input type="checkbox" class="saved-select-cb" data-select-saved-id="' + esc(key) + '"' + (checked ? " checked" : "") + '>',
-                 '      <span class="question-meta">' + esc(b.subjectName || b.subjectId) + ' · ' + esc(b.sourceLabel || b.quizId || "") + '</span>',
+                 '      <span class="question-meta panel-item-source">' + esc(b.subjectName || b.subjectId) + (b.sourceLabel || b.quizId ? (' · ' + esc(b.sourceLabel || b.quizId)) : '') + '</span>',
                  '    </label>',
-                 '    <button type="button" class="quiet" data-remove-id="' + esc(key) + '">' + esc(txt("Remove ★", "إزالة من المحفوظات")) + '</button>',
+                 '    <button type="button" class="quiet panel-chip-btn" data-remove-id="' + esc(key) + '">' + esc(txt("Remove ★", "إزالة ★")) + '</button>',
                  '  </div>',
-                 '  <strong style="font-size:0.98rem;">' + esc(b.question || b.id) + '</strong>',
+                 '  <strong class="panel-item-q">' + esc(b.question || b.id) + '</strong>',
                     renderPanelQuestionImages(b),
-                    b.correctAnswer ? ('<div style="font-size:0.84rem;color:var(--accent-text);">' + esc(txt("Verified Answer:", "الإجابة المعتمدة:")) + ' <strong>' + esc(b.correctAnswer) + '</strong></div>') : '',
+                    b.correctAnswer ? ('<div style="font-size:0.84rem;color:var(--accent-text);">' + esc(txt("Answer:", "الإجابة:")) + ' <strong>' + esc(b.correctAnswer) + '</strong></div>') : '',
                  '</article>'
                ].join("\n");
              }).join("\n"),
@@ -215,10 +335,29 @@
       ].join("\n");
 
       container.querySelector("#savedBackHub").addEventListener("click", function () { navigateTo("/?flow=hub"); });
-      container.querySelector("#savedCourseFilter").addEventListener("change", function (e) {
-        filterCourse = e.target.value;
-        paint();
-      });
+      var savedSyncBtn = container.querySelector("#savedSyncBtn");
+      if (savedSyncBtn) {
+        savedSyncBtn.addEventListener("click", async function () {
+          savedSyncBtn.disabled = true;
+          try {
+            var syncRes = typeof state.syncNow === "function"
+              ? await state.syncNow()
+              : await state.syncProgressToCloud({ force: true });
+            if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+            paint();
+            if (syncRes && syncRes.ok) {
+              await hydrateIncompleteItems("bookmarks", catalog).then(function (enriched) {
+                if (enriched && container.isConnected !== false) paint();
+              }).catch(function () {});
+              showToast(txt("Saved items synced (" + (state.getState().bookmarks || []).length + ").", "تمت المزامنة (" + (state.getState().bookmarks || []).length + ")."));
+            } else {
+              showToast((syncRes && syncRes.error) || txt("Could not sync right now — check your connection or sign in again.", "تعذرت المزامنة الآن — تأكد من الاتصال أو سجل دخول تاني."));
+            }
+          } finally {
+            if (savedSyncBtn.isConnected !== false) savedSyncBtn.disabled = false;
+          }
+        });
+      }
       container.querySelectorAll("[data-saved-course-pill]").forEach(function (pill) {
         pill.addEventListener("click", function () {
           filterCourse = pill.getAttribute("data-saved-course-pill") || "all";
@@ -316,6 +455,7 @@
     }
 
     paint();
+    bindPanelSyncLifecycle(container, "#savedBackHub", "bookmarks", catalog, paint);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -338,6 +478,7 @@
         .map(function (s) { return '<option value="' + esc(s.id) + '"' + (filterCourse === s.id ? " selected" : "") + '>' + esc(state.getSubjectName(s)) + '</option>'; })
         .join("");
 
+      var isSignedInMistakes = Boolean(state.getAuth());
       container.innerHTML = [
         '<section class="hub-panel">',
         '  <div class="breadcrumbs">',
@@ -345,18 +486,21 @@
         '    <span>/</span>',
         '    <span>' + esc(state.t("mistakes")) + '</span>',
         '  </div>',
-        '  <div class="dialog-head">',
-        '    <div>',
-        '      <h1 style="margin:0;font-size:1.35rem;">↺ ' + esc(state.t("mistakes")) + ' (' + mistakes.length + ')</h1>',
-        '      <p class="question-meta" style="margin:4px 0 0;">' + esc(state.t("smartReviewDesc")) + '</p>',
+        '  <div class="dialog-head panel-header-bar">',
+        '    <div class="panel-title-wrap">',
+        '      <div class="panel-title-row">',
+        '        <h1 style="margin:0;font-size:1.3rem;">↺ ' + esc(state.t("mistakes")) + ' (' + mistakes.length + ')</h1>',
+                 isSignedInMistakes ? '<button type="button" class="secondary panel-chip-btn" id="mistakesSyncBtn" title="' + esc(txt("Sync now", "مزامنة الآن")) + '">⟳ ' + esc(txt("Sync", "مزامنة")) + '</button>' : '',
+        '      </div>',
+        '      <p class="question-meta panel-subtitle" style="margin:4px 0 0;">' + esc(state.t("smartReviewDesc")) + '</p>',
         '    </div>',
-        '    <div class="inline">',
-               unresolvedList.length ? '<button type="button" class="primary" id="practiceMistakesBtn">' + esc(txt("Smart Review Deck", "مجموعة المراجعة الذكية")) + ' (' + Math.min(unresolvedList.length, 25) + ') →</button>' : '',
+        '    <div class="panel-actions-bar">',
+               unresolvedList.length ? '<button type="button" class="primary" id="practiceMistakesBtn">' + esc(txt("Smart Review", "مراجعة ذكية")) + ' (' + Math.min(unresolvedList.length, 25) + ') →</button>' : '',
                allCount ? '<button type="button" class="secondary" id="clearMistakesBtn">' + esc(state.t("clearAll")) + '</button>' : '',
         '    </div>',
         '  </div>',
-        '  <div class="panel-tools">',
-        '    <div class="filter-bar">',
+        '  <div class="panel-tools mistakes-tools-bar">',
+        '    <div class="filter-bar is-mobile-scroll">',
         '      <button type="button" class="filter-pill' + (statusFilter === "unresolved" ? " is-active" : "") + '" data-m-status="unresolved">' + esc(state.t("unresolvedLabel")) + ' (' + unresolvedList.length + ')</button>',
         '      <button type="button" class="filter-pill' + (statusFilter === "resolved" ? " is-active" : "") + '" data-m-status="resolved">' + esc(state.t("resolvedLabel")) + ' (' + resolvedList.length + ')</button>',
         '      <button type="button" class="filter-pill' + (statusFilter === "all" ? " is-active" : "") + '" data-m-status="all">' + esc(state.t("allLabel")) + ' (' + (unresolvedList.length + resolvedList.length) + ')</button>',
@@ -375,16 +519,16 @@
                var id = m.internalId || m.id;
                return [
                  '<article class="panel-item hub-review">',
-                 '  <div class="dialog-head">',
-                 '    <span class="question-meta">' + esc(m.subjectName || m.subjectId) + ' · ' + esc(txt("Missed", "أخطأت")) + ' ' + Number(m.missCount || 1) + '×' + (m.resolved ? (" · ✓ " + esc(state.t("resolvedLabel"))) : "") + '</span>',
-                 '    <div class="inline">',
+                 '  <div class="panel-item-head">',
+                 '    <span class="question-meta panel-item-source">' + esc(m.subjectName || m.subjectId) + ' · ' + esc(txt("Missed", "أخطأت")) + ' ' + Number(m.missCount || 1) + '×' + (m.resolved ? (" · ✓ " + esc(state.t("resolvedLabel"))) : "") + '</span>',
+                 '    <div class="inline" style="flex-shrink:0;gap:5px;">',
                  m.resolved
-                   ? '<button type="button" class="quiet" data-reopen-id="' + esc(id) + '">' + esc(state.t("reopenLabel")) + '</button>'
-                   : '<button type="button" class="quiet" data-resolve-id="' + esc(id) + '">' + esc(state.t("resolveLabel")) + '</button>',
-                 '      <button type="button" class="quiet" data-clear-id="' + esc(id) + '">' + esc(state.t("deleteLabel")) + '</button>',
+                   ? '<button type="button" class="quiet panel-chip-btn" data-reopen-id="' + esc(id) + '">' + esc(state.t("reopenLabel")) + '</button>'
+                   : '<button type="button" class="quiet panel-chip-btn" data-resolve-id="' + esc(id) + '">' + esc(state.t("resolveLabel")) + '</button>',
+                 '      <button type="button" class="quiet panel-chip-btn" data-clear-id="' + esc(id) + '">' + esc(state.t("deleteLabel")) + '</button>',
                  '    </div>',
                  '  </div>',
-                 '  <strong>' + esc(m.question || m.id) + '</strong>',
+                 '  <strong class="panel-item-q">' + esc(m.question || m.id) + '</strong>',
                     renderPanelQuestionImages(m),
                  '  <div style="font-size:0.84rem;color:var(--muted);">',
                  m.lastWrongOptionId ? (esc(txt("Your choice:", "إجابتك:")) + ' <strong>' + esc(m.lastWrongOptionId) + '</strong> · ') : '',
@@ -403,6 +547,29 @@
       ].join("\n");
 
       container.querySelector("#mistakesBackHub").addEventListener("click", function () { navigateTo("/?flow=hub"); });
+      var mistakesSyncBtn = container.querySelector("#mistakesSyncBtn");
+      if (mistakesSyncBtn) {
+        mistakesSyncBtn.addEventListener("click", async function () {
+          mistakesSyncBtn.disabled = true;
+          try {
+            var syncRes = typeof state.syncNow === "function"
+              ? await state.syncNow()
+              : await state.syncProgressToCloud({ force: true });
+            if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+            paint();
+            if (syncRes && syncRes.ok) {
+              await hydrateIncompleteItems("mistakes", catalog).then(function (enriched) {
+                if (enriched && container.isConnected !== false) paint();
+              }).catch(function () {});
+              showToast(txt("Mistakes synced (" + state.getMistakes("", { status: "all" }).length + ").", "تمت مزامنة الأخطاء (" + state.getMistakes("", { status: "all" }).length + ")."));
+            } else {
+              showToast((syncRes && syncRes.error) || txt("Could not sync right now — check your connection or sign in again.", "تعذرت المزامنة الآن — تأكد من الاتصال أو سجل دخول تاني."));
+            }
+          } finally {
+            if (mistakesSyncBtn.isConnected !== false) mistakesSyncBtn.disabled = false;
+          }
+        });
+      }
       container.querySelector("#mistakesCourseFilter").addEventListener("change", function (e) {
         filterCourse = e.target.value;
         paint();
@@ -502,6 +669,7 @@
     }
 
     paint();
+    bindPanelSyncLifecycle(container, "#mistakesBackHub", "mistakes", catalog, paint);
   }
 
   /* ---------------------------------------------------------------------- */
@@ -662,10 +830,14 @@
           if (!uname) return;
           if (btn) btn.disabled = true;
           try {
+            var guestPayload = { username: uname };
+            if (typeof state.exportCloudProgress === "function") {
+              guestPayload.progress = state.exportCloudProgress();
+            }
             var res = await fetch("/api/auth/guest", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ username: uname }),
+              body: JSON.stringify(guestPayload),
             });
             var data = await res.json().catch(function () { return null; });
             if (!res.ok || !data || !data.ok || !data.token) {
@@ -673,7 +845,16 @@
               return;
             }
             state.setAuth(data);
-            await state.syncProgressToCloud().catch(function () {});
+            var cloudProg = (data.profile && data.profile.progress) || data.progress;
+            if (cloudProg && typeof state.applyCloudProgress === "function") {
+              state.applyCloudProgress(cloudProg, {
+                studentId: data.profile && data.profile.studentId,
+                username: data.profile && data.profile.username,
+              });
+            }
+            if (typeof state.syncProgressToCloud === "function") {
+              await state.syncProgressToCloud().catch(function () {});
+            }
             if (root.ElgoShell) {
               root.ElgoShell.renderHeaderAndNav();
               root.ElgoShell.showToast(txt("Joined leaderboard as " + (data.profile && data.profile.username ? data.profile.username : uname) + "!", "تم دخولك الترتيب باسم " + (data.profile && data.profile.username ? data.profile.username : uname) + "!"));
@@ -718,6 +899,18 @@
       var streakVal = profile
         ? Number((profile.stats && profile.stats.streakDays !== undefined ? profile.stats.streakDays : (profile.streakDays !== undefined ? profile.streakDays : profile.streak)) || 0)
         : 0;
+      var syncStatus = typeof state.getSyncStatus === "function" ? state.getSyncStatus() : null;
+      var syncStObj = state.getState();
+      var savedTotal = (syncStObj.bookmarks || []).length;
+      var mistakesTotal = (syncStObj.mistakes || []).length;
+      var hasSyncErr = Boolean(syncStatus && !syncStatus.ok && syncStatus.error);
+      var syncSummaryText = !auth
+        ? txt("Guest/local mode · Sign in to sync across devices.", "وضع محلي · سجل دخول علشان تزامن بين أجهزتك.")
+        : hasSyncErr
+          ? txt("Sync issue: " + syncStatus.error, "مشكلة في المزامنة: " + syncStatus.error)
+          : syncStObj.pendingProgressSync
+            ? txt("Pending changes waiting to sync · " + savedTotal + " saved · " + mistakesTotal + " mistakes", "تغييرات محلية في انتظار المزامنة · " + savedTotal + " محفوظ · " + mistakesTotal + " أخطاء")
+            : txt("Cloud synced · " + savedTotal + " saved · " + mistakesTotal + " mistakes", "تمت المزامنة مع السحابة · " + savedTotal + " محفوظ · " + mistakesTotal + " أخطاء");
 
       container.innerHTML = [
         '<section class="hub-panel">',
@@ -782,6 +975,7 @@
         '  </div>',
         '  <div class="panel-item hub-settings">',
         '    <strong>' + esc(state.t("offlineSyncHeading")) + '</strong>',
+        '    <p class="question-meta" id="settingsSyncStatus" style="margin:2px 0 8px;' + (hasSyncErr ? "color:var(--danger, #c43);" : "") + '">' + esc(syncSummaryText) + '</p>',
         '    <div class="inline">',
         '      <button type="button" class="secondary" id="openTeamSettingsBtn">' + esc(state.t("teamTitle")) + '</button>',
         '      <a href="/?panel=admin" class="secondary">' + esc(state.t("adminAccess")) + '</a>',
@@ -831,6 +1025,9 @@
       if (signOutBtn) {
         signOutBtn.addEventListener("click", async function () {
           try {
+            if (state.getState().pendingProgressSync && typeof state.syncProgressToCloud === "function") {
+              await state.syncProgressToCloud({ force: true }).catch(function () {});
+            }
             await fetch("/api/auth/logout", { method: "POST", headers: state.authHeaders() });
           } catch (_err) {
             // Ignore network failures on signout
@@ -888,8 +1085,30 @@
       }
 
       container.querySelector("#syncPendingBtn").addEventListener("click", async function () {
-        var out = await state.syncPendingAttempts();
-        showToast("Synced " + (out.synced || 0) + " pending attempt(s).");
+        var btn = container.querySelector("#syncPendingBtn");
+        if (btn) btn.disabled = true;
+        try {
+          if (state.getAuth() && typeof state.syncNow === "function") {
+            var syncRes = await state.syncNow();
+            if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+            paint();
+            if (!syncRes || !syncRes.ok) {
+              showToast((syncRes && syncRes.error) || txt("Could not sync bookmarks & mistakes.", "تعذرت مزامنة المحفوظات والأخطاء."));
+              return;
+            }
+            showToast(txt(
+              "Synced " + (syncRes.attemptsSynced || 0) + " attempt(s) · " + (syncRes.bookmarksCount || 0) + " saved · " + (syncRes.mistakesCount || 0) + " mistakes.",
+              "تمت المزامنة: " + (syncRes.attemptsSynced || 0) + " محاولة · " + (syncRes.bookmarksCount || 0) + " محفوظ · " + (syncRes.mistakesCount || 0) + " أخطاء."
+            ));
+            return;
+          }
+          var out = await state.syncPendingAttempts();
+          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+          paint();
+          showToast(txt("Synced " + (out.synced || 0) + " pending attempt(s).", "تمت مزامنة " + (out.synced || 0) + " محاولة معلقة."));
+        } finally {
+          if (btn && btn.isConnected !== false) btn.disabled = false;
+        }
       });
 
       container.querySelector("#exportProgressBtn").addEventListener("click", function () {

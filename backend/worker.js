@@ -321,6 +321,101 @@ async function createUserSession(env, studentId) {
 // ---------------------------------------------------------------------------
 // Progress blob
 // ---------------------------------------------------------------------------
+function parseProgressIsoMs(val) {
+  if (!val || typeof val !== "string") return 0;
+  const ms = Date.parse(val);
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function mergeTimestampMaps(cloudMap, localMap, maxEntries) {
+  const out = {};
+  const addFrom = function (src) {
+    if (!src || typeof src !== "object" || Array.isArray(src)) return;
+    for (const [k, v] of Object.entries(src)) {
+      if (!k || typeof v !== "string") continue;
+      const ms = parseProgressIsoMs(v);
+      if (!ms) continue;
+      if (!out[k] || ms > parseProgressIsoMs(out[k])) out[k] = v;
+    }
+  };
+  addFrom(cloudMap);
+  addFrom(localMap);
+  const limit = maxEntries || 500;
+  const entries = Object.entries(out);
+  if (entries.length <= limit) return out;
+  entries.sort(function (a, b) { return parseProgressIsoMs(b[1]) - parseProgressIsoMs(a[1]); });
+  const trimmed = {};
+  for (let i = 0; i < limit; i++) trimmed[entries[i][0]] = entries[i][1];
+  return trimmed;
+}
+
+function progressBookmarkIdentity(item) {
+  if (!item || typeof item !== "object") return JSON.stringify(item);
+  return String(item.internalId || item.id || item.questionId || JSON.stringify(item));
+}
+
+function progressMistakeIdentity(item) {
+  if (!item || typeof item !== "object") return JSON.stringify(item);
+  return String(item.internalId || item.questionId || item.id || JSON.stringify(item));
+}
+
+function progressMistakeTimestampMs(item) {
+  if (!item || typeof item !== "object") return 0;
+  return Math.max(
+    parseProgressIsoMs(item.updatedAt),
+    parseProgressIsoMs(item.lastAttemptedAt),
+    parseProgressIsoMs(item.resolvedAt)
+  );
+}
+
+function isMistakeItemResolved(item) {
+  if (!item || typeof item !== "object") return false;
+  return item.status === "resolved" || (item.status !== "unresolved" && Boolean(item.resolved));
+}
+
+function fillMissingFields(target, source, fields) {
+  for (const key of fields) {
+    if ((target[key] === undefined || target[key] === null || target[key] === "") && source[key] !== undefined && source[key] !== null && source[key] !== "") {
+      target[key] = source[key];
+    }
+  }
+}
+
+function mergeMistakePair(prev, next) {
+  const newer = progressMistakeTimestampMs(prev) > progressMistakeTimestampMs(next) ? prev : next;
+  const older = newer === prev ? next : prev;
+  const mergedItem = Object.assign({}, older, newer);
+  fillMissingFields(mergedItem, older, [
+    "id", "internalId", "originalQuestionId", "subjectId", "subjectName",
+    "quizId", "collectionId", "question", "questionText", "image",
+    "correctOptionId", "lastWrongOptionId", "selectedOptionId", "firstFailedAt"
+  ]);
+  if ((!Array.isArray(mergedItem.images) || !mergedItem.images.length) && Array.isArray(older.images) && older.images.length) {
+    mergedItem.images = older.images;
+  }
+  const firstAt = [older.firstFailedAt, newer.firstFailedAt].filter(Boolean).sort(function (a, b) {
+    return parseProgressIsoMs(a) - parseProgressIsoMs(b);
+  })[0];
+  if (firstAt) mergedItem.firstFailedAt = firstAt;
+  const maxMiss = Math.max(Number(older.failureCount || older.missCount || 1), Number(newer.failureCount || newer.missCount || 1));
+  if ("failureCount" in older || "failureCount" in newer || maxMiss > 1) mergedItem.failureCount = maxMiss;
+  if ("missCount" in older || "missCount" in newer) mergedItem.missCount = maxMiss;
+  if (Array.isArray(older.attempts) || Array.isArray(newer.attempts)) {
+    const seenAt = new Set();
+    mergedItem.attempts = (older.attempts || []).concat(newer.attempts || []).filter(function (entry) {
+      if (!entry || typeof entry !== "object") return false;
+      const sig = String(entry.at || "") + "::" + String(entry.selectedOptionId || "");
+      if (seenAt.has(sig)) return false;
+      seenAt.add(sig);
+      return true;
+    }).sort(function (a, b) { return parseProgressIsoMs(a.at) - parseProgressIsoMs(b.at); }).slice(-25);
+  }
+  const resolvedFlag = isMistakeItemResolved(newer);
+  mergedItem.status = resolvedFlag ? "resolved" : "unresolved";
+  if ("resolved" in older || "resolved" in newer) mergedItem.resolved = resolvedFlag;
+  return mergedItem;
+}
+
 function mergeProgress(localProgress, cloudProgress) {
   const local = localProgress && typeof localProgress === "object" ? localProgress : {};
   const cloud = cloudProgress && typeof cloudProgress === "object" ? cloudProgress : {};
@@ -334,24 +429,98 @@ function mergeProgress(localProgress, cloudProgress) {
       totalAttempts: Math.max(Number(left.totalAttempts) || 0, Number(right.totalAttempts) || 0)
     });
   });
-  ["bookmarks", "attemptLog"].forEach(function (key) {
-    const values = (Array.isArray(cloud[key]) ? cloud[key] : []).concat(Array.isArray(local[key]) ? local[key] : []);
-    const seen = {};
-    merged[key] = values.filter(function (item) {
-      const id = item && (item.internalId || item.questionId || item.attemptId || JSON.stringify(item));
-      if (seen[id]) return false;
-      seen[id] = true;
-      return true;
-    });
+
+  const deletedBookmarks = mergeTimestampMaps(cloud.deletedBookmarks, local.deletedBookmarks, 500);
+  const bookmarkMap = new Map();
+  const cloudBookmarks = Array.isArray(cloud.bookmarks) ? cloud.bookmarks : [];
+  const localBookmarks = Array.isArray(local.bookmarks) ? local.bookmarks : [];
+  // Process local before cloud for recency order while letting newer timestamps win on conflicts.
+  localBookmarks.concat(cloudBookmarks).forEach(function (item) {
+    if (!item || typeof item !== "object") return;
+    const id = progressBookmarkIdentity(item);
+    if (!id) return;
+    if (!bookmarkMap.has(id)) {
+      bookmarkMap.set(id, item);
+      return;
+    }
+    const prev = bookmarkMap.get(id);
+    const newer = parseProgressIsoMs(item.savedAt) > parseProgressIsoMs(prev.savedAt) ? item : prev;
+    const older = newer === item ? prev : item;
+    const combined = Object.assign({}, older, newer);
+    fillMissingFields(combined, older, [
+      "id", "internalId", "subjectId", "subjectName", "quizId",
+      "sourceLabel", "question", "image", "correctOptionId", "correctAnswer"
+    ]);
+    if ((!Array.isArray(combined.images) || !combined.images.length) && Array.isArray(older.images) && older.images.length) {
+      combined.images = older.images;
+    }
+    bookmarkMap.set(id, combined);
   });
-  const cloudMistakes = cloud.mistakes && Array.isArray(cloud.mistakes.items) ? cloud.mistakes.items : [];
-  const localMistakes = local.mistakes && Array.isArray(local.mistakes.items) ? local.mistakes.items : [];
-  merged.mistakes = Object.assign({}, cloud.mistakes || {}, local.mistakes || {}, {
-    items: localMistakes.concat(cloudMistakes).filter(function (item, index, list) {
-      const identity = value => value && (value.internalId || value.questionId || value.id || JSON.stringify(value));
-      return list.findIndex(function (entry) { return identity(entry) === identity(item); }) === index;
-    })
+  merged.bookmarks = [];
+  for (const [id, item] of bookmarkMap.entries()) {
+    const savedMs = parseProgressIsoMs(item.savedAt);
+    const delMs = parseProgressIsoMs(deletedBookmarks[id]);
+    if (delMs > savedMs) continue;
+    if (savedMs > delMs && deletedBookmarks[id]) delete deletedBookmarks[id];
+    merged.bookmarks.push(item);
+  }
+  merged.deletedBookmarks = deletedBookmarks;
+
+  const deletedMistakes = mergeTimestampMaps(cloud.deletedMistakes, local.deletedMistakes, 500);
+  const cloudCleared = typeof cloud.mistakesClearedAt === "string" ? cloud.mistakesClearedAt : null;
+  const localCleared = typeof local.mistakesClearedAt === "string" ? local.mistakesClearedAt : null;
+  const mistakesClearedAt = parseProgressIsoMs(localCleared) >= parseProgressIsoMs(cloudCleared) ? (localCleared || cloudCleared) : cloudCleared;
+  const clearedMs = parseProgressIsoMs(mistakesClearedAt);
+
+  const cloudMistakes = Array.isArray(cloud.mistakes)
+    ? cloud.mistakes
+    : (cloud.mistakes && Array.isArray(cloud.mistakes.items) ? cloud.mistakes.items : []);
+  const localMistakes = Array.isArray(local.mistakes)
+    ? local.mistakes
+    : (local.mistakes && Array.isArray(local.mistakes.items) ? local.mistakes.items : []);
+  const mistakeMap = new Map();
+  localMistakes.concat(cloudMistakes).forEach(function (item) {
+    if (!item || typeof item !== "object") return;
+    const id = progressMistakeIdentity(item);
+    if (!id) return;
+    if (!mistakeMap.has(id)) {
+      mistakeMap.set(id, Object.assign({}, item));
+    } else {
+      mistakeMap.set(id, mergeMistakePair(mistakeMap.get(id), item));
+    }
   });
+  const mergedMistakeItems = [];
+  for (const [id, item] of mistakeMap.entries()) {
+    const itemMs = progressMistakeTimestampMs(item);
+    const delItemMs = parseProgressIsoMs(deletedMistakes[id]);
+    const effectiveDelMs = Math.max(delItemMs, clearedMs);
+    if (effectiveDelMs > itemMs) continue;
+    if (itemMs > delItemMs && deletedMistakes[id]) delete deletedMistakes[id];
+    mergedMistakeItems.push(item);
+  }
+  const cloudMistakesObj = cloud.mistakes && !Array.isArray(cloud.mistakes) && typeof cloud.mistakes === "object" ? cloud.mistakes : {};
+  const localMistakesObj = local.mistakes && !Array.isArray(local.mistakes) && typeof local.mistakes === "object" ? local.mistakes : {};
+  merged.mistakes = Object.assign({}, cloudMistakesObj, localMistakesObj, {
+    schemaVersion: 2,
+    items: mergedMistakeItems
+  });
+  merged.deletedMistakes = deletedMistakes;
+  if (mistakesClearedAt) merged.mistakesClearedAt = mistakesClearedAt;
+
+  const rawAttempts = []
+    .concat(Array.isArray(local.attempts) ? local.attempts : (Array.isArray(local.attemptLog) ? local.attemptLog : []))
+    .concat(Array.isArray(cloud.attempts) ? cloud.attempts : (Array.isArray(cloud.attemptLog) ? cloud.attemptLog : []));
+  const seenAttempts = new Set();
+  const dedupedAttempts = rawAttempts.filter(function (item) {
+    if (!item || typeof item !== "object") return false;
+    const id = item.attemptId || item.id || ((item.subjectId || "") + "::" + (item.quizId || item.collectionId || "") + "::" + (item.finishedAt || ""));
+    if (seenAttempts.has(id)) return false;
+    seenAttempts.add(id);
+    return true;
+  }).slice(0, 50);
+  merged.attempts = dedupedAttempts;
+  delete merged.attemptLog;
+
   merged.checklists = Object.assign({}, cloud.checklists || {}, local.checklists || {});
   return merged;
 }
@@ -751,7 +920,12 @@ async function route(request, env) {
     }
     await touchOnlineUser(env, { studentId: session.studentId, username: session.username, displayName: session.displayName, isGuest: session.guest, isAdmin: session.isAdmin }, now, "");
     const stats = await getUserStudyStats(env, session.studentId);
-    return jsonResponse({ ok: true, profile: { studentId: session.studentId, username: session.username, isAdmin: session.isAdmin, guest: session.guest, stats: stats } });
+    let progress = {};
+    try {
+      const userRow = await env.DB.prepare("SELECT progress_json FROM users WHERE student_id = ?1").bind(session.studentId).first();
+      progress = JSON.parse((userRow && userRow.progress_json) || "{}");
+    } catch (_e) { /* ignore missing or malformed progress */ }
+    return jsonResponse({ ok: true, profile: { studentId: session.studentId, username: session.username, isAdmin: session.isAdmin, guest: session.guest, stats: stats, progress: progress } });
   }
 
   if (pathname === "/api/auth/sync-progress" && method === "POST") {
@@ -759,12 +933,19 @@ async function route(request, env) {
     if (!session) return fail(401, "Authentication required.", "AUTH_REQUIRED");
     const parsed = await readJson(request);
     if (parsed.tooLarge) return fail(413, "Request too large.", "TOO_LARGE");
+    if (parsed.invalid) return fail(400, "Invalid JSON payload.", "BAD_REQUEST");
+    const rawProgress = parsed.body && parsed.body.progress;
+    if (rawProgress && typeof rawProgress === "object" && !Array.isArray(rawProgress)) {
+      let rawSize = 0;
+      try { rawSize = JSON.stringify(rawProgress).length; } catch (_e) { return fail(400, "Invalid progress payload.", "BAD_REQUEST"); }
+      if (rawSize > MAX_PROGRESS_BYTES) return fail(413, "Progress data too large.", "TOO_LARGE");
+    }
     const row = await env.DB.prepare("SELECT progress_json FROM users WHERE student_id = ?1").bind(session.studentId).first();
     let existing = {};
     try { existing = JSON.parse((row && row.progress_json) || "{}"); } catch (_e) { /* ignore */ }
-    const merged = mergeProgress(boundedProgress(parsed.body.progress), existing);
+    const merged = mergeProgress(boundedProgress(rawProgress), existing);
     if (!(await saveProgress(env, session.studentId, merged))) return fail(413, "Progress data too large.", "TOO_LARGE");
-    return jsonResponse({ ok: true });
+    return jsonResponse({ ok: true, progress: merged });
   }
 
   // ---- Public site data ----------------------------------------------------
@@ -1180,13 +1361,15 @@ async function handleGuest(request, env) {
   // Record guest creation against its own dedicated bucket (never triggers auth lockout).
   await rateRecordFailure(env, guestIpKey, now, GUEST_CREATE_LIMIT.max, GUEST_CREATE_LIMIT.windowMs, GUEST_CREATE_LIMIT.lockMs);
   const studentId = "gst_" + randomHex(16);
+  const progress = mergeProgress(boundedProgress(parsed.body.progress), {});
   try {
     await env.DB.prepare("INSERT INTO users (student_id, username, display_name, username_change_count, password_hash, is_admin, progress_json) VALUES (?1, ?2, ?3, 0, ?4, 0, ?5)")
-      .bind(studentId, check.username, check.username, "", "{}").run();
+      .bind(studentId, check.username, check.username, "", JSON.stringify(progress)).run();
   } catch (_) { return fail(409, "That username is already taken.", "USERNAME_TAKEN"); }
+  await saveProgress(env, studentId, progress);
   const token = await createUserSession(env, studentId);
   await touchOnlineUser(env, { studentId, username: check.username, displayName: check.username, isGuest: true, isAdmin: false }, now, "");
-  return jsonResponse(profileResponse({student_id:studentId,username:check.username,is_admin:0},token,{}));
+  return jsonResponse(profileResponse({student_id:studentId,username:check.username,is_admin:0},token,progress));
 }
 async function handleGuestUpgrade(request, env) {
   const session = await getUserSession(request, env);

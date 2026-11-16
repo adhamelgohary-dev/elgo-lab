@@ -641,10 +641,14 @@
         if (!uname) return;
         if (btn) btn.disabled = true;
         try {
+          var gBody = { username: uname };
+          if (typeof State.exportCloudProgress === "function") {
+            gBody.progress = State.exportCloudProgress();
+          }
           var gRes = await fetch("/api/auth/guest", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ username: uname }),
+            body: JSON.stringify(gBody),
           });
           var gData = await gRes.json().catch(function () { return null; });
           if (!gRes.ok || !gData || !gData.ok || !gData.token) {
@@ -652,6 +656,13 @@
             return;
           }
           State.setAuth(gData);
+          var gProg = (gData.profile && gData.profile.progress) || gData.progress;
+          if (gProg && typeof State.applyCloudProgress === "function") {
+            State.applyCloudProgress(gProg, {
+              studentId: gData.profile && gData.profile.studentId,
+              username: gData.profile && gData.profile.username,
+            });
+          }
           if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
 
           var subRes = await fetch("/api/quiz/submit", {
@@ -898,6 +909,7 @@
             subjectName: session.subjectName,
             collectionId: q.collectionId || session.collectionId,
           });
+          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         }
         persistActiveSession();
         renderQuestionView(container, session);
