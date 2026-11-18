@@ -220,6 +220,9 @@
         var st = State.getState();
         st.activeSession = null;
         State.saveState(st);
+        if (root.ElgoPlayer && typeof root.ElgoPlayer.clearActiveSession === "function") {
+          root.ElgoPlayer.clearActiveSession();
+        }
         renderHomeGarden(container, catalog, params);
       });
     }
@@ -300,20 +303,24 @@
   }
 
   /* ---------------------------------------------------------------------- */
-  /* SOURCES BUILDER (STICKY SESSION + MODE DEFAULT TEST)                   */
+  /* QUIZ SETUP                   */
   /* ---------------------------------------------------------------------- */
   function renderSourcesView(container, catalog, subj) {
     var State = root.ElgoState;
     var Model = root.ElgoModel;
     var allSources = Model.listSources(catalog, subj.id, "all");
     var savedSelected = State.getSelectedSources(subj.id);
-    var selectedSet = new Set(savedSelected);
+    var selectedSet = new Set(savedSelected.filter(function (id) {
+      return allSources.some(function (source) { return source.id === id; });
+    }));
 
     if (selectedSet.size === 0 && allSources.length > 0) {
       selectedSet.add(allSources[0].id);
       State.setSelectedSources(subj.id, Array.from(selectedSet));
     }
 
+    var step = 1;
+    var launching = false;
     var kindFilter = "all";
     var mode = "test";
     var shuffleQ = false;
@@ -325,12 +332,18 @@
       return allSources.filter(function (s) { return s.kind === kindFilter; });
     }
 
-    function paint() {
+    var isAr = root.ElgoTheme && root.ElgoTheme.getLang() === "ar";
+    function quizText(en, ar) { return isAr ? ar : en; }
+
+    function paint(focusSelector) {
       var list = filteredSources();
       var selectedList = allSources.filter(function (s) { return selectedSet.has(s.id); });
       var totalQ = selectedList.reduce(function (acc, s) { return acc + Number(s.questionCount || 0); }, 0);
+      if (questionLimit >= totalQ) questionLimit = 0;
       var effectiveQ = questionLimit > 0 ? Math.min(totalQ, questionLimit) : totalQ;
-      var isSingleGradable = selectedList.length === 1;
+      var isSingleGradable = selectedList.length === 1 && questionLimit === 0;
+      var selectionSummary = quizText(selectedList.length + " selected · " + effectiveQ + " questions",
+        "المجموعات المختارة: " + selectedList.length + " · الأسئلة: " + effectiveQ);
 
       var modeHint = mode === "study"
         ? State.t("studyHint")
@@ -338,7 +351,7 @@
           ? State.t("practiceHint")
           : (isSingleGradable
               ? State.t("testHint")
-              : "Timed exam mode. Tip: pick 1 single source in Test mode for official Leaderboard ranking.");
+              : quizText("Answers stay hidden until submission. Choose one complete set to be eligible for ranking.", "تظل الإجابات مخفية حتى التسليم. اختر مجموعة كاملة واحدة للتأهل للترتيب."));
 
       var exporter = root.ElgoOfflineExport;
       var siteSettings = typeof State.getSiteSettings === "function" ? State.getSiteSettings() : null;
@@ -351,7 +364,7 @@
 
       var tilesHtml = list.map(function (src) {
         var checked = selectedSet.has(src.id);
-        var kindLabel = src.kind === "sheet" ? "Sheet" : src.kind === "lecture" ? "Lecture" : "Bank";
+        var kindLabel = src.kind === "sheet" ? quizText("Sheet", "شيت") : src.kind === "lecture" ? quizText("Lecture", "محاضرة") : quizText("Bank", "بنك أسئلة");
         var canDl = Boolean(exporter && exporter.isQuizDownloadAllowed(siteSettings, subj.id, src.id));
         return [
           '<button type="button" class="source-tile" data-src-id="' + esc(src.id) + '" aria-pressed="' + (checked ? "true" : "false") + '">',
@@ -360,20 +373,19 @@
           '    <span class="source-tick" aria-hidden="true">' + (checked ? "✓" : "") + '</span>',
           '  </div>',
           '  <strong style="font-size:0.95rem;line-height:1.35;">' + esc(State.getQuizTitle(src)) + '</strong>',
-          '  <small style="color:var(--muted);">' + Number(src.questionCount || 0) + ' questions' + (canDl ? ' · ⬇ HTML' : '') + '</small>',
+          '  <small style="color:var(--muted);">' + Number(src.questionCount || 0) + quizText(' questions', ' سؤال') + (canDl ? ' · ⬇ HTML' : '') + '</small>',
           '</button>'
         ].join("\n");
       }).join("\n");
 
-      var isAr = root.ElgoTheme && root.ElgoTheme.getLang() === "ar";
       container.innerHTML = [
         '<div class="sources-page-head">',
-        '  <h2>' + esc(State.t("buildPractice")) + '</h2>',
-        '  <p style="margin:4px 0 0;color:var(--muted);">' + esc(State.t("chooseSourceSub")) + '</p>',
+        '  <h2 id="quizSetupHeading" tabindex="-1">' + esc(step === 1
+          ? quizText("Choose question sets", "اختر مجموعات الأسئلة")
+          : quizText("Choose a quiz mode", "اختر وضع الاختبار")) + '</h2>',
         '</div>',
-        '<div class="sources-layout">',
+        ...(step === 1 ? [
         '  <div class="sources-main-col">',
-        '    <p class="step-badge">' + (isAr ? 'الخطوة ١ · اختار المحاضرات أو البنوك أو الشيتات' : 'Step 1 · Pick bank(s), sheets, or lectures') + '</p>',
         '    <div class="sources-toolbar">',
         '      <div class="filter-bar">',
         '        <button type="button" class="filter-pill' + (kindFilter === "all" ? " is-active" : "") + '" data-kind-filter="all">' + esc(State.t("allSources")) + ' (' + allSources.length + ')</button>',
@@ -386,75 +398,93 @@
         '        <button type="button" class="quiet" id="clearSourcesBtn">' + esc(State.t("clearSelection")) + '</button>',
         '      </div>',
         '    </div>',
-        list.length ? ('<div class="source-grid">' + tilesHtml + '</div>') : '<div class="empty-state">No sources match this filter yet.</div>',
+        list.length ? ('<div class="source-grid">' + tilesHtml + '</div>') : ('<div class="empty-state">' + esc(quizText("No question sets match this filter.", "لا توجد مجموعات أسئلة بهذا الفلتر.")) + '</div>'),
         '  </div>',
-        '  <aside class="setup-panel" aria-label="Session Builder">',
-        '    <div>',
-        '      <span class="step-badge">' + (isAr ? 'الخطوة ٢ · اختار طريقة الحل واضغط ابدأ' : 'Step 2 · Pick mode & start') + '</span>',
-        '      <h3 style="margin:6px 0 0;font-size:1.05rem;">' + esc(State.t("yourSession")) + '</h3>',
-        '      <small style="color:var(--muted);">' + selectedList.length + (isAr ? ' مصدر محدد · ' : ' selected · ') + effectiveQ + (isAr ? ' سؤال' : ' questions') + '</small>',
-        '    </div>',
-        '    <div class="mode-options" role="radiogroup" aria-label="Session Mode">',
+        '  <div class="quiz-setup-actions">',
+        '    <span role="status">' + esc(selectionSummary) + '</span>',
+        '    <button type="button" class="primary" id="nextQuizSetupBtn"' + (totalQ === 0 ? ' disabled' : '') + '>' + esc(quizText("Next", "التالي")) + '</button>',
+        '  </div>',
+        ] : [
+        '  <div class="setup-panel quiz-mode-step">',
+        '    <p role="status">' + esc(selectionSummary) + '</p>',
+        '    <div class="mode-options" role="radiogroup" aria-labelledby="quizSetupHeading">',
         '      <label class="mode-choice"><input type="radio" name="sessionMode" value="study"' + (mode === "study" ? " checked" : "") + '><span><strong>' + esc(State.t("studyMode")) + ' <span class="mode-tag">' + esc(State.t("studyTag")) + '</span></strong><small style="display:block;color:var(--muted);">' + (isAr ? 'السؤال مع الإجابة الصح والشرح ظاهرين قدامك.' : 'Read questions with correct answers &amp; explanations shown.') + '</small></span></label>',
         '      <label class="mode-choice"><input type="radio" name="sessionMode" value="test"' + (mode === "test" ? " checked" : "") + '><span><strong>' + esc(State.t("testMode")) + ' <span class="mode-tag">' + esc(State.t("testTag")) + '</span></strong><small style="display:block;color:var(--muted);">' + (isAr ? 'امتحان حقيقي بوقت' : 'Exam flow') + (isSingleGradable ? (isAr ? " · محسوب في المتصدرين" : " · Ranked eligible") : (isAr ? " · اختار بنك واحد للترتيب" : " · Pick 1 bank to rank")) + '</small></span></label>',
         '      <label class="mode-choice"><input type="radio" name="sessionMode" value="practice"' + (mode === "practice" ? " checked" : "") + '><span><strong>' + esc(State.t("practiceMode")) + ' <span class="mode-tag">' + esc(State.t("practiceTag")) + '</span></strong><small style="display:block;color:var(--muted);">' + (isAr ? 'حل السؤال وشوف صح ولا غلط فوراً.' : 'Answer &amp; check right/wrong immediately.') + '</small></span></label>',
         '    </div>',
         '    <p style="margin:0;font-size:0.8rem;color:var(--muted);">' + esc(modeHint) + '</p>',
-        '    <label class="setup-row" style="cursor:pointer;"><span>Shuffle question order</span><input type="checkbox" id="shuffleQCheck"' + (shuffleQ ? " checked" : "") + '></label>',
-        '    <label class="setup-row" style="cursor:pointer;"><span>Shuffle answer choices</span><input type="checkbox" id="shuffleOptsCheck"' + (shuffleOpts ? " checked" : "") + '></label>',
-        '    <label class="setup-row"><span>Question count</span><select id="limitSelect" style="padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--tile);color:var(--ink);">',
-        '      <option value="0"' + (questionLimit === 0 ? " selected" : "") + '>All (' + totalQ + ')</option>',
-        '      <option value="10"' + (questionLimit === 10 ? " selected" : "") + '>10 Qs</option>',
-        '      <option value="20"' + (questionLimit === 20 ? " selected" : "") + '>20 Qs</option>',
-        '      <option value="30"' + (questionLimit === 30 ? " selected" : "") + '>30 Qs</option>',
-        '      <option value="50"' + (questionLimit === 50 ? " selected" : "") + '>50 Qs</option>',
+        '    <label class="setup-row" style="cursor:pointer;"><span>' + esc(quizText("Shuffle questions", "اخلط ترتيب الأسئلة")) + '</span><input type="checkbox" id="shuffleQCheck"' + (shuffleQ ? " checked" : "") + '></label>',
+        '    <label class="setup-row" style="cursor:pointer;"><span>' + esc(quizText("Shuffle answers", "اخلط الاختيارات")) + '</span><input type="checkbox" id="shuffleOptsCheck"' + (shuffleOpts ? " checked" : "") + '></label>',
+        '    <label class="setup-row"><span>' + esc(quizText("Question count", "عدد الأسئلة")) + '</span><select id="limitSelect" style="padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--tile);color:var(--ink);">',
+        '      <option value="0"' + (questionLimit === 0 ? " selected" : "") + '>' + esc(quizText('All', 'الكل')) + ' (' + totalQ + ')</option>',
+        totalQ > 10 ? '      <option value="10"' + (questionLimit === 10 ? " selected" : "") + '>10</option>' : "",
+        totalQ > 20 ? '      <option value="20"' + (questionLimit === 20 ? " selected" : "") + '>20</option>' : "",
+        totalQ > 30 ? '      <option value="30"' + (questionLimit === 30 ? " selected" : "") + '>30</option>' : "",
+        totalQ > 50 ? '      <option value="50"' + (questionLimit === 50 ? " selected" : "") + '>50</option>' : "",
         '    </select></label>',
-        '    <button type="button" class="primary" id="startSessionBtn"' + (effectiveQ === 0 ? " disabled" : "") + '>' + esc(State.t("startSession")) + ' (' + effectiveQ + ') →</button>',
+        '    <div class="quiz-setup-actions">',
+        '      <button type="button" class="secondary" id="backQuizSetupBtn">' + esc(quizText("Back to sets", "الرجوع للمجموعات")) + '</button>',
+        '      <button type="button" class="primary" id="startSessionBtn"' + (effectiveQ === 0 || launching ? " disabled" : "") + '>' + esc(quizText("Start quiz", "ابدأ الاختبار")) + '</button>',
+        '    </div>',
+        '    <p id="quizSetupFeedback" role="status" hidden></p>',
              canDownloadSelected ? ('    <button type="button" class="secondary" id="downloadOfflineQuizBtn">⬇ ' + esc(isAr ? "تحميل صفحة HTML أوفلاين" : "Download Offline HTML") + ' (' + effectiveQ + ')</button>') : '',
-        '  </aside>',
-        '</div>',
-        '<div class="mobile-session-bar">',
-        '  <div><strong>' + selectedList.length + ' selected · ' + effectiveQ + ' Qs</strong><small style="display:block;color:var(--muted);">' + esc(mode.toUpperCase()) + ' mode</small></div>',
-        '  <button type="button" class="primary" id="mobileStartSessionBtn"' + (effectiveQ === 0 ? " disabled" : "") + '>' + esc(State.t("startSession")) + ' →</button>',
-        '</div>'
+        '  </div>',
+        ]),
       ].join("\n");
 
-      container.querySelectorAll("[data-kind-filter]").forEach(function (btn) {
-        btn.addEventListener("click", function () {
-          kindFilter = btn.getAttribute("data-kind-filter");
-          paint();
+      if (focusSelector) {
+        var focusTarget = container.querySelector(focusSelector);
+        if (focusTarget) focusTarget.focus();
+      }
+      if (step === 1) {
+        container.querySelector("#nextQuizSetupBtn").addEventListener("click", function () {
+          if (!totalQ) return;
+          step = 2;
+          paint("#quizSetupHeading");
         });
-      });
+        container.querySelectorAll("[data-kind-filter]").forEach(function (btn) {
+          btn.addEventListener("click", function () {
+            kindFilter = btn.getAttribute("data-kind-filter");
+            paint('[data-kind-filter="' + kindFilter + '"]');
+          });
+        });
 
-      container.querySelectorAll("[data-src-id]").forEach(function (tile) {
-        tile.addEventListener("click", function () {
-          var sid = tile.getAttribute("data-src-id");
-          if (selectedSet.has(sid)) {
-            selectedSet.delete(sid);
-          } else {
-            selectedSet.add(sid);
-          }
+        container.querySelectorAll("[data-src-id]").forEach(function (tile) {
+          tile.addEventListener("click", function () {
+            var sid = tile.getAttribute("data-src-id");
+            if (selectedSet.has(sid)) {
+              selectedSet.delete(sid);
+            } else {
+              selectedSet.add(sid);
+            }
+            State.setSelectedSources(subj.id, Array.from(selectedSet));
+            paint('[data-src-id="' + CSS.escape(sid) + '"]');
+          });
+        });
+
+        container.querySelector("#selectAllSourcesBtn").addEventListener("click", function () {
+          list.forEach(function (s) { selectedSet.add(s.id); });
           State.setSelectedSources(subj.id, Array.from(selectedSet));
-          paint();
+          paint("#selectAllSourcesBtn");
         });
-      });
 
-      container.querySelector("#selectAllSourcesBtn").addEventListener("click", function () {
-        list.forEach(function (s) { selectedSet.add(s.id); });
-        State.setSelectedSources(subj.id, Array.from(selectedSet));
-        paint();
-      });
+        container.querySelector("#clearSourcesBtn").addEventListener("click", function () {
+          selectedSet.clear();
+          State.setSelectedSources(subj.id, []);
+          paint("#clearSourcesBtn");
+        });
 
-      container.querySelector("#clearSourcesBtn").addEventListener("click", function () {
-        selectedSet.clear();
-        State.setSelectedSources(subj.id, []);
-        paint();
+        return;
+      }
+      container.querySelector("#backQuizSetupBtn").addEventListener("click", function () {
+        step = 1;
+        paint("#quizSetupHeading");
       });
 
       container.querySelectorAll('input[name="sessionMode"]').forEach(function (rad) {
         rad.addEventListener("change", function () {
           mode = rad.value;
-          paint();
+          paint('input[name="sessionMode"][value="' + mode + '"]');
         });
       });
 
@@ -462,46 +492,57 @@
       container.querySelector("#shuffleOptsCheck").addEventListener("change", function (e) { shuffleOpts = e.target.checked; });
       container.querySelector("#limitSelect").addEventListener("change", function (e) {
         questionLimit = Number(e.target.value) || 0;
-        paint();
+        paint("#limitSelect");
       });
 
       var startSessionHandler = async function (btn) {
         var chosenIds = Array.from(selectedSet);
-        if (!chosenIds.length) return;
+        if (!chosenIds.length || launching) return;
+        launching = true;
+        var setup = { mode: mode, shuffleQ: shuffleQ, shuffleOpts: shuffleOpts, limit: questionLimit };
+        var authGeneration = State.getAuthGeneration();
+        var feedback = container.querySelector("#quizSetupFeedback");
+        feedback.hidden = false;
+        feedback.textContent = quizText("Loading questions…", "جاري تحميل الأسئلة…");
         btn.disabled = true;
         try {
           var qs = await State.loadQuestionsForSources(subj.id, chosenIds);
-          if (!qs.length) {
-            root.ElgoShell.showToast("No questions available inside the selected bank(s).");
+          if (!btn.isConnected || !container.contains(btn)) return;
+          if (State.getAuthGeneration() !== authGeneration) {
+            feedback.textContent = quizText("Your session changed. Start the quiz again.", "تغيّرت جلستك. ابدأ الاختبار مرة أخرى.");
             return;
           }
-          var workingQs = shuffleQ ? Model.shuffleArray(qs) : qs;
-          if (questionLimit > 0 && workingQs.length > questionLimit) {
-            workingQs = workingQs.slice(0, questionLimit);
+          if (!qs.length) {
+            feedback.textContent = quizText("No questions are available in the selected sets.", "لا توجد أسئلة في المجموعات المختارة.");
+            return;
+          }
+          var workingQs = setup.shuffleQ ? Model.shuffleArray(qs) : qs;
+          if (setup.limit > 0 && workingQs.length > setup.limit) {
+            workingQs = workingQs.slice(0, setup.limit);
           }
           var firstMeta = allSources.find(function (s) { return s.id === chosenIds[0]; });
           var spec = Model.buildSessionSpec({
             subject: subj,
             questions: workingQs,
             sourceIds: chosenIds,
-            mode: mode,
+            mode: setup.mode,
             shuffleQuestions: false,
-            shuffleOptions: shuffleOpts,
-            isGradableCollection: chosenIds.length === 1 && questionLimit === 0,
+            shuffleOptions: setup.shuffleOpts,
+            isGradableCollection: chosenIds.length === 1 && setup.limit === 0,
             title: chosenIds.length === 1 && firstMeta ? State.getQuizTitle(firstMeta, subj.id) : (State.getSubjectName(subj) + " (" + chosenIds.length + " sources)"),
           });
           root.ElgoPlayer.launchSpec(spec);
         } catch (err) {
-          if (root.ElgoShell) root.ElgoShell.showToast((err && err.message) || "Could not start quiz session.");
+          feedback.textContent = quizText("Could not load the quiz. Try again.", "تعذّر تحميل الاختبار. حاول مرة أخرى.");
         } finally {
-          btn.disabled = false;
+          launching = false;
+          var currentStart = container.querySelector("#startSessionBtn");
+          if (currentStart) currentStart.disabled = false;
         }
       };
 
-      var desktopStart = container.querySelector("#startSessionBtn");
-      var mobileStart = container.querySelector("#mobileStartSessionBtn");
-      if (desktopStart) desktopStart.addEventListener("click", function () { startSessionHandler(desktopStart); });
-      if (mobileStart) mobileStart.addEventListener("click", function () { startSessionHandler(mobileStart); });
+      var startButton = container.querySelector("#startSessionBtn");
+      startButton.addEventListener("click", function () { return startSessionHandler(startButton); });
 
       var offlineQuizBtn = container.querySelector("#downloadOfflineQuizBtn");
       if (offlineQuizBtn && exporter) {

@@ -404,6 +404,7 @@
       finishDialog = document.createElement("dialog");
       finishDialog.className = "elgo-dialog player-finish-dialog";
       finishDialog.id = "playerFinishDialog";
+      finishDialog.setAttribute("aria-labelledby", "playerFinishTitle");
       document.body.appendChild(finishDialog);
       finishDialog.addEventListener("click", function (e) { if (e.target === finishDialog) finishDialog.close(); });
     }
@@ -411,20 +412,20 @@
     finishDialog.innerHTML = [
       '<div class="dialog-body">',
       '  <div class="dialog-head">',
-      '    <h2>' + (session.isStudy ? "Finish study review?" : "Submit exam answers?") + '</h2>',
+      '    <h2 id="playerFinishTitle">' + esc(session.isStudy ? txt("Finish study review?", "تنهي مراجعة المذاكرة؟") : txt("Submit quiz answers?", "تسلّم إجابات الاختبار؟")) + '</h2>',
       '    <button type="button" class="quiet" id="finishCancelX">✕</button>',
       '  </div>',
       '  <div class="results-stats-row">',
-      '    <div class="results-stat"><span>Answered</span><strong>' + answered + ' / ' + total + '</strong></div>',
-      '    <div class="results-stat"><span>Unanswered</span><strong>' + unanswered + '</strong></div>',
-      '    <div class="results-stat"><span>Flagged</span><strong>' + flagged + '</strong></div>',
+      '    <div class="results-stat"><span>' + esc(txt("Answered", "تمت الإجابة")) + '</span><strong>' + answered + ' / ' + total + '</strong></div>',
+      '    <div class="results-stat"><span>' + esc(txt("Unanswered", "بلا إجابة")) + '</span><strong>' + unanswered + '</strong></div>',
+      '    <div class="results-stat"><span>' + esc(txt("Flagged", "معلّمة")) + '</span><strong>' + flagged + '</strong></div>',
       '  </div>',
       unanswered > 0 && !session.isStudy
-        ? '<p style="margin:0;color:var(--warning);font-size:0.88rem;">You still have <strong>' + unanswered + '</strong> unanswered question' + (unanswered === 1 ? '' : 's') + '. You can return to answer them or submit now.</p>'
-        : '<p style="margin:0;color:var(--muted);font-size:0.88rem;">Ready to finish this session and review your breakdown?</p>',
+        ? '<p style="margin:0;color:var(--warning);font-size:0.88rem;">' + esc(txt(unanswered + " unanswered. You can return or submit now.", "عدد الأسئلة بلا إجابة: " + unanswered + ". يمكنك الرجوع أو التسليم الآن.")) + '</p>'
+        : '<p style="margin:0;color:var(--muted);font-size:0.88rem;">' + esc(txt("Finish and review this session?", "تنهي الجلسة وتراجعها؟")) + '</p>',
       '  <div class="inline" style="justify-content:flex-end;">',
-      '    <button type="button" class="secondary" id="finishCancelBtn">Return to Quiz</button>',
-      '    <button type="button" class="primary" id="finishConfirmBtn">' + (session.isStudy ? "Finish Study →" : "Submit &amp; Score →") + '</button>',
+      '    <button type="button" class="secondary" id="finishCancelBtn" autofocus>' + esc(txt("Return to quiz", "الرجوع للاختبار")) + '</button>',
+      '    <button type="button" class="primary" id="finishConfirmBtn">' + esc(session.isStudy ? txt("Finish study", "إنهاء المذاكرة") : txt("Submit answers", "تسليم الإجابات")) + '</button>',
       '  </div>',
       '</div>'
     ].join("\n");
@@ -433,7 +434,7 @@
     finishDialog.querySelector("#finishCancelBtn").addEventListener("click", function () { finishDialog.close(); });
     finishDialog.querySelector("#finishConfirmBtn").addEventListener("click", function () {
       finishDialog.close();
-      onConfirm();
+      return onConfirm();
     });
 
     if (!finishDialog.open && typeof finishDialog.showModal === "function") {
@@ -472,7 +473,7 @@
       var qSubjId = q.subjectId || session.subjectId;
       var exp = presentExplanation(q, chosen, qSubjId);
       var cls = !hasKey ? "" : isRight ? "is-right" : "is-wrong";
-      var badgeText = !hasKey ? "Unkeyed" : isRight ? "✓ Right" : "✗ Missed";
+      var badgeText = !hasKey ? txt("No answer key", "بلا إجابة معتمدة") : isRight ? txt("Correct", "صحيح") : txt("Missed", "إجابة فائتة");
       var isSavedQ = State.isBookmarked(q.internalId);
 
       return [
@@ -487,8 +488,8 @@
         '  <div>' + formatStem(q.question || q.text) + '</div>',
              renderQuestionImagesHtml(q, { compact: true }),
         '  <div style="font-size:0.84rem;color:var(--muted);">',
-        '    Your answer: <strong>' + esc(chosen || "Not answered") + '</strong>',
-             hasKey ? (' · Correct: <strong>' + esc(q.correctOptionId) + '</strong>') : '',
+        '    ' + esc(txt("Your answer", "إجابتك")) + ' <strong>' + esc(chosen || txt("Not answered", "بلا إجابة")) + '</strong>',
+             hasKey ? (' · ' + esc(txt("Correct answer", "الإجابة الصحيحة")) + ' <strong>' + esc(q.correctOptionId) + '</strong>') : '',
         '  </div>',
              (exp.en || exp.ar || exp.rule) ? [
                '<details style="font-size:0.86rem;">',
@@ -514,14 +515,14 @@
       '        <img src="' + mascotSrc + '" alt="elgo mascot result" width="68" height="68" style="border-radius:16px;flex-shrink:0;">',
       '        <div>',
       '          <p class="eyebrow">' + esc(session.subjectName) + ' · ' + esc(session.title) + '</p>',
-      '          <h1 style="margin:0;">' + (session.isStudy ? esc(txt("Study Review Complete", "انتهت مراجعة المذاكرة")) : (r.score + " / " + r.total + " " + esc(txt("Correct", "إجابة صحيحة")))) + '</h1>',
+      '          <h1 id="quizResultsHeading" tabindex="-1" style="margin:0;">' + (session.isStudy ? esc(txt("Study Review Complete", "انتهت مراجعة المذاكرة")) : (r.score + " / " + r.total + " " + esc(txt("Correct", "إجابة صحيحة")))) + '</h1>',
       '          <p style="margin:6px 0 0;color:var(--muted);">' + esc(r.statusMessage) + '</p>',
       '        </div>',
       '      </div>',
       '      <div class="results-score-big">' + (session.isStudy ? esc(State.t("studyMode")) : (r.percentage + "%")) + '</div>',
       '    </div>',
       '    <div class="results-stats-row">',
-      '      <div class="results-stat"><span>' + esc(txt("Mode", "الوضع")) + '</span><strong>' + esc(session.mode.toUpperCase()) + '</strong></div>',
+      '      <div class="results-stat"><span>' + esc(txt("Mode", "الوضع")) + '</span><strong>' + esc(State.t(session.mode === "study" ? "studyMode" : session.mode === "practice" ? "practiceMode" : "testMode")) + '</strong></div>',
       '      <div class="results-stat"><span>' + esc(txt("Duration", "الوقت")) + '</span><strong>' + formatDuration(r.durationMs) + '</strong></div>',
       '      <div class="results-stat"><span>' + esc(txt("Questions", "الأسئلة")) + '</span><strong>' + session.questions.length + '</strong></div>',
       '      <div class="results-stat"><span>' + esc(txt("Missed", "الأخطاء")) + '</span><strong>' + (session.isStudy ? "—" : wrongQuestions.length) + '</strong></div>',
@@ -639,12 +640,18 @@
         var btn = container.querySelector("#resQuickRankBtn");
         var uname = input ? input.value.trim() : "";
         if (!uname) return;
+        var curAuthRank = State.getAuth();
+        if (curAuthRank && curAuthRank.profile && curAuthRank.profile.guest) {
+          if (root.ElgoShell) root.ElgoShell.openAuthModal("upgrade");
+          return;
+        }
         if (btn) btn.disabled = true;
         try {
-          var gBody = { username: uname };
-          if (typeof State.exportCloudProgress === "function") {
-            gBody.progress = State.exportCloudProgress();
-          }
+          var gBeforeGen = typeof State.getAuthGeneration === "function" ? State.getAuthGeneration() : null;
+          var stBeforeRank = typeof State.getState === "function" ? State.getState() : null;
+          var gBody = typeof State.buildAuthPayload === "function"
+            ? State.buildAuthPayload({ mode: "guest", username: uname, includeLocalProgress: true })
+            : { username: uname };
           var gRes = await fetch("/api/auth/guest", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -655,19 +662,26 @@
             if (root.ElgoShell) root.ElgoShell.showToast((gData && gData.error) || txt("Could not create guest name.", "تعذر استخدام الاسم ده."));
             return;
           }
-          State.setAuth(gData);
-          var gProg = (gData.profile && gData.profile.progress) || gData.progress;
-          if (gProg && typeof State.applyCloudProgress === "function") {
-            State.applyCloudProgress(gProg, {
-              studentId: gData.profile && gData.profile.studentId,
-              username: gData.profile && gData.profile.username,
-            });
+          if (typeof State.completeAuthTransition === "function") {
+            var rankTransitioned = await State.completeAuthTransitionWithLock(gData, { expectedAuthGeneration: gBeforeGen, skipPlayerClear: true });
+            if (!rankTransitioned) return;
+          } else {
+            State.setAuth(gData);
+            var gProg = (gData.profile && gData.profile.progress) || gData.progress;
+            if (gProg && typeof State.applyCloudProgress === "function") {
+              State.applyCloudProgress(gProg, {
+                studentId: gData.profile && gData.profile.studentId,
+                username: gData.profile && gData.profile.username,
+                replace: Boolean(stBeforeRank && stBeforeRank.ownerStudentId),
+                serverTime: gData.serverTime,
+              });
+            }
           }
           if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
 
           var subRes = await fetch("/api/quiz/submit", {
             method: "POST",
-            headers: State.authHeaders({ "Content-Type": "application/json" }),
+            headers: State.authHeaders({ "Content-Type": "application/json" }, gData.token),
             body: JSON.stringify({
               attemptId: session.attemptId,
               subjectId: session.subjectId,
@@ -707,7 +721,7 @@
     }
   }
 
-  function renderQuestionView(container, session) {
+  function renderQuestionView(container, session, focusSelector) {
     if (session.completed) {
       renderResultsView(container, session);
       return;
@@ -727,7 +741,8 @@
     var bookmarked = State.isBookmarked(q.internalId);
     var flagged = Boolean(session.flags[q.internalId]);
     var answeredCount = Object.keys(session.answers).length;
-    var pctDone = total > 0 ? Math.round(((session.currentIndex + 1) / total) * 100) : 0;
+    var progress = session.isStudy ? session.currentIndex + 1 : answeredCount;
+    var pctDone = total > 0 ? Math.round((progress / total) * 100) : 0;
 
     var optionsHtml = (q.options || []).map(function (opt) {
       var selected = chosenId === opt.id;
@@ -753,7 +768,7 @@
 
       var lockBtn = session.isStudy || (session.mode === "practice" && isAnswered);
       return [
-        '<button type="button" class="' + cls + '" data-opt-id="' + esc(opt.id) + '"' + (lockBtn ? " disabled" : "") + '>',
+        '<button type="button" class="' + cls + '" data-opt-id="' + esc(opt.id) + '" aria-pressed="' + (selected ? 'true' : 'false') + '"' + (lockBtn ? " disabled" : "") + '>',
         '  <span class="option-letter">' + esc(opt.id) + '</span>',
         '  <span class="option-text">' + formatStem(opt.text) + '</span>',
            statusLabel ? '<span class="option-status">' + esc(statusLabel) + '</span>' : '',
@@ -815,25 +830,26 @@
       '      <span class="player-mode-pill">' + esc(session.mode === "study" ? State.t("modeStudyPill") : session.mode === "practice" ? State.t("modePracticePill") : State.t("modeTestPill")) + '</span>',
       '    </div>',
       '    <div class="inline">',
-      '      <button type="button" class="quiet player-map-toggle-btn" id="toggleMapBtn" aria-expanded="' + (session._mobileNavOpen ? "true" : "false") + '">' + esc(txt("Map", "الخريطة")) + ' (' + answeredCount + '/' + total + ')</button>',
+      '      <button type="button" class="quiet player-map-toggle-btn" id="toggleMapBtn" aria-controls="playerNavPanel" aria-expanded="' + (session._mobileNavOpen ? "true" : "false") + '">' + esc(txt("Map", "الخريطة")) + ' (' + answeredCount + '/' + total + ')</button>',
       '      <span class="player-timer" id="playerTimer">' + formatDuration(Date.now() - session.startedAt) + '</span>',
       '      <button type="button" class="primary" id="finishQuizTopBtn">' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
       '    </div>',
       '  </div>',
-      '  <div class="player-progress-bar" aria-hidden="true">',
+      '  <div class="player-progress-bar" role="progressbar" aria-label="' + esc(session.isStudy
+        ? State.t("questionLabel") : State.t("answeredLabel")) + '" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + progress + '">',
       '    <div class="player-progress-fill" style="width:' + pctDone + '%"></div>',
       '  </div>',
       '  <div class="player-layout">',
       '    <section class="question-card" aria-label="Active Question">',
       '      <div class="question-head">',
-      '        <span class="question-counter">' + esc(State.t("questionLabel")) + ' ' + (session.currentIndex + 1) + ' ' + esc(State.t("ofLabel")) + ' ' + total + ' · ' + esc(State.t("answeredLabel")) + ' ' + answeredCount + '/' + total + '</span>',
+      '        <span class="question-counter">' + esc(State.t("questionLabel")) + ' ' + (session.currentIndex + 1) + ' ' + esc(State.t("ofLabel")) + ' ' + total + (session.isStudy ? '' : ' · ' + esc(State.t("answeredLabel")) + ' ' + answeredCount + '/' + total) + '</span>',
       '        <div class="question-actions-inline">',
       '          <button type="button" class="q-tool-btn" id="flagQuestionBtn" aria-pressed="' + (flagged ? "true" : "false") + '">⚑ ' + esc(flagged ? State.t("flaggedLabel") : State.t("flagQuestion")) + '</button>',
       '          <button type="button" class="q-tool-btn" id="bookmarkQuestionBtn" aria-pressed="' + (bookmarked ? "true" : "false") + '">🔖 ' + esc(bookmarked ? State.t("savedLabel") : State.t("bookmarkQuestion")) + '</button>',
       '          <button type="button" class="q-tool-btn" id="reportQuestionBtn">⚠ ' + esc(State.t("reportIssue")) + '</button>',
       '        </div>',
       '      </div>',
-      '      <h2 class="question-stem">' + formatStem(q.question || q.text) + '</h2>',
+      '      <h2 class="question-stem" id="activeQuestionHeading" tabindex="-1">' + formatStem(q.question || q.text) + '</h2>',
              renderQuestionImagesHtml(q),
       '      <div class="options-stack" id="qOptionsList">' + optionsHtml + '</div>',
              feedbackHtml,
@@ -859,6 +875,11 @@
       '  </div>',
       '</div>'
     ].join("\n");
+
+    if (focusSelector) {
+      var focusTarget = container.querySelector(focusSelector);
+      if (focusTarget) focusTarget.focus();
+    }
 
     stopTimer();
     timerHandle = setInterval(function () {
@@ -903,7 +924,7 @@
         if (session.mode === "practice" && session.answers[q.internalId]) return;
         var optId = btn.getAttribute("data-opt-id");
         session.answers[q.internalId] = optId;
-        if (q.correctOptionId && optId !== q.correctOptionId) {
+        if (session.mode === "practice" && q.correctOptionId && optId !== q.correctOptionId) {
           State.recordMistake(q, optId, {
             subjectId: q.subjectId || session.subjectId,
             subjectName: session.subjectName,
@@ -912,14 +933,16 @@
           if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         }
         persistActiveSession();
-        renderQuestionView(container, session);
+        renderQuestionView(container, session, session.mode === "practice"
+          ? (session.currentIndex < total - 1 ? "#nextQuestionBtn" : "#finishQuizBottomBtn")
+          : '[data-opt-id="' + CSS.escape(optId) + '"]');
       });
     });
 
     container.querySelector("#flagQuestionBtn").addEventListener("click", function () {
       session.flags[q.internalId] = !session.flags[q.internalId];
       persistActiveSession();
-      renderQuestionView(container, session);
+      renderQuestionView(container, session, "#flagQuestionBtn");
     });
 
     container.querySelector("#bookmarkQuestionBtn").addEventListener("click", function () {
@@ -927,10 +950,14 @@
         subjectId: q.subjectId || session.subjectId,
         subjectName: session.subjectName,
         collectionId: q.collectionId || session.collectionId,
+        hideAnswer: session.mode === "test" && !session.completed,
+        attemptId: session.attemptId,
       });
-      root.ElgoShell.showToast(saved ? "Question saved to bookmarks." : "Removed from bookmarks.");
+      if (root.ElgoShell) root.ElgoShell.showToast(saved
+        ? txt("Question saved.", "تم حفظ السؤال.")
+        : txt("Question removed from saved questions.", "تمت إزالة السؤال من المحفوظات."));
       if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
-      renderQuestionView(container, session);
+      renderQuestionView(container, session, "#bookmarkQuestionBtn");
     });
 
     container.querySelector("#reportQuestionBtn").addEventListener("click", function () {
@@ -942,7 +969,7 @@
         session.currentIndex = Number(dot.getAttribute("data-jump-idx")) || 0;
         session._mobileNavOpen = false;
         persistActiveSession();
-        renderQuestionView(container, session);
+        renderQuestionView(container, session, "#activeQuestionHeading");
       });
     });
 
@@ -950,7 +977,7 @@
       if (session.currentIndex > 0) {
         session.currentIndex -= 1;
         persistActiveSession();
-        renderQuestionView(container, session);
+        renderQuestionView(container, session, "#activeQuestionHeading");
       }
     });
 
@@ -960,17 +987,35 @@
         if (session.currentIndex < total - 1) {
           session.currentIndex += 1;
           persistActiveSession();
-          renderQuestionView(container, session);
+          renderQuestionView(container, session, "#activeQuestionHeading");
         }
       });
     }
 
     var finishHandler = function () {
       openFinishConfirmDialog(session, async function () {
+        if (session.mode === "test") {
+          (session.questions || []).forEach(function (item) {
+            if (!item || !item.correctOptionId) return;
+            var finalAns = session.answers && session.answers[item.internalId];
+            if (!finalAns || finalAns === item.correctOptionId) return;
+            State.recordMistake(item, finalAns, {
+              subjectId: item.subjectId || session.subjectId,
+              subjectName: session.subjectName,
+              collectionId: item.collectionId || session.collectionId,
+            });
+          });
+        }
         session.completed = true;
+        persistActiveSession();
+        if (session.mode === "test" && typeof State.revealBookmarksForCompletedTest === "function") {
+          State.revealBookmarksForCompletedTest(session.questions, session.attemptId);
+        }
         session.resultData = await submitAttemptToServer(session);
         if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+        if (!container.isConnected || !container.querySelector(".question-card") || activeSession !== session) return;
         renderResultsView(container, session);
+        container.querySelector("#quizResultsHeading").focus();
       });
     };
 
@@ -1013,9 +1058,11 @@
       } else if (key === "B") {
         var State = root.ElgoState;
         State.toggleBookmark(q, {
-          subjectId: activeSession.subjectId,
+          subjectId: q.subjectId || activeSession.subjectId,
           subjectName: activeSession.subjectName,
-          collectionId: activeSession.collectionId,
+          collectionId: q.collectionId || activeSession.collectionId,
+          hideAnswer: activeSession.mode === "test" && !activeSession.completed,
+          attemptId: activeSession.attemptId,
         });
         if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         renderQuestionView(host, activeSession);
@@ -1025,12 +1072,13 @@
         if (!opt) return;
         if (activeSession.mode === "practice" && activeSession.answers[q.internalId]) return;
         activeSession.answers[q.internalId] = opt.id;
-        if (q.correctOptionId && opt.id !== q.correctOptionId) {
+        if (activeSession.mode === "practice" && q.correctOptionId && opt.id !== q.correctOptionId) {
           root.ElgoState.recordMistake(q, opt.id, {
-            subjectId: activeSession.subjectId,
+            subjectId: q.subjectId || activeSession.subjectId,
             subjectName: activeSession.subjectName,
-            collectionId: activeSession.collectionId,
+            collectionId: q.collectionId || activeSession.collectionId,
           });
+          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         }
         persistActiveSession();
         renderQuestionView(host, activeSession);
@@ -1085,8 +1133,8 @@
     if (!activeSession || !Array.isArray(activeSession.questions) || !activeSession.questions.length) {
       container.innerHTML = [
         '<section class="hub-panel empty-state">',
-        '  <h2>No active quiz session</h2>',
-        '  <p>Select a course and choose question banks to start practicing.</p>',
+        '  <h2>' + esc(txt("No active quiz session", "لا توجد جلسة اختبار نشطة")) + '</h2>',
+        '  <p>' + esc(txt("Choose a subject and question sets to start a quiz.", "اختر مادة ومجموعات أسئلة لبدء الاختبار.")) + '</p>',
         '  <a href="/?flow=hub" class="primary" style="margin-top:8px;">Browse Courses →</a>',
         '</section>'
       ].join("\n");
@@ -1096,10 +1144,16 @@
     renderQuestionView(container, activeSession);
   }
 
+  function clearActiveSession() {
+    activeSession = null;
+    stopTimer();
+  }
+
   root.ElgoPlayer = {
     launchSpec: launchSpec,
     render: render,
     stopTimer: stopTimer,
+    clearActiveSession: clearActiveSession,
     getActiveSession: function () { return activeSession; },
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -200,7 +200,7 @@ test("co-admin role: granted by master only, re-checked on every request, limite
   const delAdmin = await call(env, "POST", "/api/admin/users/delete", { token: coadmin.token, body: { username: "co_admin_one" } });
   assert.equal(delAdmin.status, 403, "co-admin cannot delete an admin");
   const delStudent = await call(env, "POST", "/api/admin/users/delete", { token: coadmin.token, body: { studentId: victim.profile.studentId } });
-  assert.equal(delStudent.status, 200);
+  assert.equal(delStudent.status, 403, "student deletion requires the owner");
 
   await call(env, "POST", "/api/admin/users/role", { cookie, body: { username: "co_admin_one", isAdmin: false } });
   assert.equal((await call(env, "GET", "/api/admin/users", { token: coadmin.token })).status, 401, "revocation is immediate");
@@ -257,7 +257,7 @@ test("legacy SHA-256 passwords still work and are upgraded to PBKDF2 on login", 
   assert.equal((await call(env, "POST", "/api/auth/login", { body: { username: "legacy_user", password: "old-password" } })).status, 200);
 });
 
-test("password-less accounts cannot be taken over by logging in; claim needs the account secret", async () => {
+test("password-less accounts cannot be taken over by logging in or self-service claim", async () => {
   const env = createEnv();
   env.sqlite.prepare("INSERT INTO users (student_id, username, display_name, password_hash, progress_json) VALUES ('stu_legacyOWNER_01','old_player','old_player','','{}')").run();
 
@@ -266,16 +266,10 @@ test("password-less accounts cannot be taken over by logging in; claim needs the
   assert.equal(attack.json.code, "ACCOUNT_NEEDS_CLAIM");
   assert.equal(env.sqlite.prepare("SELECT password_hash FROM users WHERE username='old_player'").get().password_hash, "", "password still empty");
 
-  const guess = await call(env, "POST", "/api/auth/claim", { body: { username: "old_player", studentId: "stu_wrong_guess", password: "attacker-password" } });
-  assert.equal(guess.status, 404);
+  const claim = await call(env, "POST", "/api/auth/claim", { body: { username: "old_player", studentId: "stu_legacyOWNER_01", password: "demo-test-password" } });
+  assert.equal(claim.status, 403);
+  assert.equal(claim.json.code, "CLAIM_DISABLED");
   assert.equal(env.sqlite.prepare("SELECT password_hash FROM users WHERE username='old_player'").get().password_hash, "");
-
-  const owner = await call(env, "POST", "/api/auth/claim", { body: { username: "old_player", studentId: "stu_legacyOWNER_01", password: "owners-new-password" } });
-  assert.equal(owner.status, 200);
-  assert.ok(owner.json.token);
-  const again = await call(env, "POST", "/api/auth/claim", { body: { username: "old_player", studentId: "stu_legacyOWNER_01", password: "attacker-password" } });
-  assert.equal(again.status, 404, "an already-claimed account cannot be claimed twice");
-  assert.equal((await call(env, "POST", "/api/auth/login", { body: { username: "old_player", password: "owners-new-password" } })).status, 200);
 });
 
 test("profile endpoints only act on the caller's own account", async () => {

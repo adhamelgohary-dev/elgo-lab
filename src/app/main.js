@@ -139,10 +139,38 @@
     if (window.location.protocol !== "https:" && window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
       return;
     }
+    var hadController = Boolean(navigator.serviceWorker.controller);
+    var reloading = false;
+    var tryActivateWaiting = function (reg) {
+      if (!reg || !reg.waiting) return;
+      try {
+        var st = root.ElgoState && typeof root.ElgoState.getState === "function" ? root.ElgoState.getState() : null;
+        if (st && st.activeSession) return;
+        reg.waiting.postMessage({ type: "SKIP_WAITING" });
+      } catch (_e) { /* ignore */ }
+    };
+    if (typeof navigator.serviceWorker.addEventListener === "function") {
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (!hadController || reloading) return;
+        const st = root.ElgoState && typeof root.ElgoState.getState === "function" ? root.ElgoState.getState() : null;
+        if (st && st.activeSession) return;
+        reloading = true;
+        window.location.reload();
+      });
+    }
     navigator.serviceWorker
       .register("/sw.js", { updateViaCache: "none" })
       .then((reg) => {
-        if (reg && typeof reg.update === "function") {
+        if (!reg) return;
+        tryActivateWaiting(reg);
+        reg.addEventListener("updatefound", () => {
+          const nw = reg.installing;
+          if (!nw) return;
+          nw.addEventListener("statechange", () => {
+            if (nw.state === "installed") tryActivateWaiting(reg);
+          });
+        });
+        if (typeof reg.update === "function") {
           reg.update().catch(() => {});
         }
       })
@@ -177,6 +205,12 @@
           }
           if (auth) {
             root.ElgoState.syncPendingAttempts().catch(() => null);
+            if (typeof root.ElgoState.consumeRecoveredUnresolvedNotice === "function" && root.ElgoShell && typeof root.ElgoShell.showToast === "function") {
+              const recNotice = root.ElgoState.consumeRecoveredUnresolvedNotice();
+              if (recNotice && recNotice.message) {
+                root.ElgoShell.showToast(recNotice.message, { durationMs: 6500 });
+              }
+            }
           }
           const curPanel = new URLSearchParams(window.location.search).get("panel");
           if (curPanel === "settings" || curPanel === "leaderboard" || curPanel === "saved" || curPanel === "mistakes") {
@@ -205,6 +239,31 @@
     document.addEventListener("elgo:progresschange", () => {
       if (root.ElgoShell && typeof root.ElgoShell.renderHeaderAndNav === "function") {
         root.ElgoShell.renderHeaderAndNav();
+      }
+    });
+    document.addEventListener("elgo:authchange", (ev) => {
+      if (root.ElgoShell && typeof root.ElgoShell.renderHeaderAndNav === "function") {
+        root.ElgoShell.renderHeaderAndNav();
+      }
+      const clearRes = ev && ev.detail ? ev.detail.clearResult : null;
+      const authClearFailed = Boolean(clearRes && clearRes.ok === false);
+      const loggedOut = !authClearFailed && !(root.ElgoState && root.ElgoState.getAuth());
+      if ((loggedOut || authClearFailed) && root.ElgoState && typeof root.ElgoState.consumeSessionInvalidationNotice === "function") {
+        const notice = root.ElgoState.consumeSessionInvalidationNotice();
+        if (notice && notice.message && root.ElgoShell && typeof root.ElgoShell.showToast === "function") {
+          root.ElgoShell.showToast(notice.message, { durationMs: 6500 });
+        }
+      } else if (!loggedOut && !authClearFailed && root.ElgoState && typeof root.ElgoState.consumeRecoveredUnresolvedNotice === "function") {
+        const recAuthNotice = root.ElgoState.consumeRecoveredUnresolvedNotice();
+        if (recAuthNotice && recAuthNotice.message && root.ElgoShell && typeof root.ElgoShell.showToast === "function") {
+          root.ElgoShell.showToast(recAuthNotice.message, { durationMs: 6500 });
+        }
+      }
+      const params = new URLSearchParams(window.location.search);
+      const curPanel = params.get("panel");
+      if (curPanel === "admin") return;
+      if (loggedOut || authClearFailed || curPanel === "settings" || curPanel === "leaderboard" || curPanel === "saved" || curPanel === "mistakes") {
+        route();
       }
     });
     document.addEventListener("visibilitychange", () => {

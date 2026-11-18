@@ -41,6 +41,8 @@ test('admin search returns no default list, escapes wildcards and supports role/
  const env=createEnv(),a=await guest(env,'sara_one'),b=await guest(env,'saraXone'),cookie=await master(env);
  assert.deepEqual((await call(env,'/api/admin/users',{cookie})).data.users,[]);
  const result=await call(env,'/api/admin/users?q=sara_',{cookie});assert.equal(result.status,200,JSON.stringify(result.data));assert.deepEqual(result.data.users.map(u=>u.username),['sara_one']);
+ const guestGrant=await call(env,'/api/admin/users/role',{cookie,body:{studentId:a.profile.studentId,isAdmin:true}});assert.equal(guestGrant.status,409);assert.equal(guestGrant.data.code,'NEEDS_PASSWORD');
+ assert.equal((await call(env,'/api/auth/upgrade',{token:a.token,body:{password:'strong-pass-123'}})).status,200);
  const grant=await call(env,'/api/admin/users/role',{cookie,body:{studentId:a.profile.studentId,isAdmin:true}});assert.equal(grant.status,200);
  const noPrivilege=await call(env,'/api/admin/users/role',{token:b.token,body:{studentId:b.profile.studentId,isAdmin:true}});assert.equal(noPrivilege.status,403);
  const del=await call(env,'/api/admin/users/delete',{cookie,body:{studentId:a.profile.studentId}});assert.equal(del.status,200);

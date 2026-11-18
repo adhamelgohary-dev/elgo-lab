@@ -105,3 +105,11 @@ self.addEventListener("fetch", (event) => {
     })
   );
 });
+
+self.addEventListener("message", (event) => {
+  const msg = event && event.data;
+  if (!msg || typeof msg !== "object") return;
+  if (msg.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
+});

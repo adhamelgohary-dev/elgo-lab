@@ -181,14 +181,17 @@
     return data.image.url;
   }
 
-  function mountQuestionImagesEditor(hostEl, imgsList, subjectId, onMutate) {
+  function mountQuestionImagesEditor(hostEl, imgsList, subjectId, onMutate, editorOpts) {
+    const lockedUrls = editorOpts && editorOpts.lockedUrls ? editorOpts.lockedUrls : null;
     function render() {
       const canAddMore = imgsList.length < 6;
       hostEl.innerHTML = `
         <div class="dialog-body" style="padding:8px 0 0;gap:10px;">
           ${imgsList.length === 0 ? `<p class="question-meta" style="margin:0;">No images attached yet. Upload a PNG/JPG/WebP/GIF file or paste an image URL below.</p>` : `
             <div class="admin-list">
-              ${imgsList.map((img, i) => `
+              ${imgsList.map((img, i) => {
+                const isLockedSaved = Boolean(lockedUrls && img && img.url && lockedUrls.has(img.url));
+                return `
                 <div class="admin-row is-compact" style="align-items:center;">
                   <img src="${esc(img.url)}" alt="${esc(img.alt || `Image ${i + 1}`)}" style="width:72px;height:54px;object-fit:cover;border-radius:8px;border:1px solid var(--line);flex-shrink:0;">
                   <div class="admin-row-main" style="gap:4px;">
@@ -196,10 +199,13 @@
                     <input type="text" data-img-cap="${i}" maxlength="240" placeholder="Optional caption / note shown under image" value="${esc(img.caption || "")}" style="padding:5px 8px;font-size:0.8rem;">
                   </div>
                   <div class="admin-row-actions">
-                    <button type="button" class="admin-btn-danger" data-img-rm="${i}">Remove</button>
+                    ${isLockedSaved
+                      ? `<span class="admin-badge" title="Master Admin session required to remove saved quiz images">Saved · Owner only</span>`
+                      : `<button type="button" class="admin-btn-danger" data-img-rm="${i}">Remove</button>`}
                   </div>
                 </div>
-              `).join("")}
+              `;
+              }).join("")}
             </div>
           `}
           ${canAddMore ? `
@@ -478,6 +484,16 @@
     }
 
     let onlineRefreshTimer = null;
+    let activeAdminSession = null;
+
+    function handleMasterAuthFailure(res, data) {
+      if (res && res.status === 403 && data && (data.code === "FORBIDDEN" || /master/i.test(data.error || ""))) {
+        toast("Master admin session expired or required. Unlock Owner tools with the master password.");
+        paint();
+        return true;
+      }
+      return false;
+    }
 
     function clearOnlineRefreshTimer() {
       if (onlineRefreshTimer !== null) {
@@ -583,6 +599,21 @@
                 ${session.role === "master" ? `<button type="button" class="secondary" id="adminLogoutBtn">Lock Session</button>` : ""}
               </div>
             </div>
+            ${session.role === "coadmin" ? `
+              <div class="admin-owner-unlock" id="ownerToolsCard" style="margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--tile);">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+                  <div>
+                    <strong>Owner tools</strong>
+                    <p class="question-meta" style="margin:2px 0 0;">Enter the master password to unlock owner-only actions (grant/revoke admins, delete users, delete courses or quizzes).</p>
+                  </div>
+                  <form id="ownerUnlockForm" class="inline" style="gap:8px;flex-wrap:wrap;">
+                    <input type="password" id="ownerPassInput" required autocomplete="current-password" placeholder="Master password" style="padding:7px 10px;border-radius:9px;border:1px solid var(--line);background:var(--surface);color:var(--ink);">
+                    <button type="submit" class="primary" id="ownerUnlockBtn">Unlock Owner Tools</button>
+                  </form>
+                </div>
+                <div id="ownerUnlockError" class="dialog-error hidden" style="margin-top:8px;"></div>
+              </div>
+            ` : ""}
             <div class="admin-tabs">
               ${tabs.map((t) => `<button type="button" class="admin-tab${activeTab === t.id ? " is-active" : ""}" data-tab="${t.id}">${esc(t.label)}</button>`).join("")}
             </div>
@@ -615,6 +646,39 @@
         });
       }
 
+      const ownerForm = container.querySelector("#ownerUnlockForm");
+      if (ownerForm) {
+        ownerForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const errEl = container.querySelector("#ownerUnlockError");
+          const btnEl = container.querySelector("#ownerUnlockBtn");
+          if (errEl) errEl.classList.add("hidden");
+          if (btnEl) btnEl.disabled = true;
+          try {
+            const password = container.querySelector("#ownerPassInput").value;
+            const { res, data } = await apiFetch("/api/admin/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ password }),
+            });
+            if (!res.ok || !data || !data.ok) {
+              throw new Error((data && data.error) || `Login failed (${res.status})`);
+            }
+            toast("Owner tools unlocked.");
+            paint();
+          } catch (ex) {
+            if (errEl) {
+              errEl.textContent = ex.message || "Authentication failed.";
+              errEl.classList.remove("hidden");
+            } else {
+              toast(ex.message || "Authentication failed.");
+            }
+          } finally {
+            if (btnEl && btnEl.isConnected !== false) btnEl.disabled = false;
+          }
+        });
+      }
+
       function switchTab(nextId) {
         activeTab = nextId;
         clearOnlineRefreshTimer();
@@ -633,10 +697,11 @@
     }
 
     async function renderTab(body, session) {
-      if (activeTab === "courses") return renderCoursesTab(body);
-      if (activeTab === "library") return renderLibraryTab(body);
-      if (activeTab === "importer") return renderImporterTab(body);
-      if (activeTab === "reports") return renderReportsTab(body);
+      activeAdminSession = session;
+      if (activeTab === "courses") return renderCoursesTab(body, session);
+      if (activeTab === "library") return renderLibraryTab(body, session);
+      if (activeTab === "importer") return renderImporterTab(body, session);
+      if (activeTab === "reports") return renderReportsTab(body, session);
       if (activeTab === "users") return renderUsersTab(body, session);
       if (activeTab === "settings") return renderSettingsTab(body, session);
     }
@@ -644,7 +709,9 @@
     // ------------------------------------------------------------------------
     // TAB 1: PER-COURSE & QUIZZES MANAGER (COMPACT + MODAL EDITING + DELETE)
     // ------------------------------------------------------------------------
-    async function renderCoursesTab(body) {
+    async function renderCoursesTab(body, sessionArg) {
+      const session = sessionArg || activeAdminSession || { role: "coadmin" };
+      const isMaster = session.role === "master";
       const subjects = catalog.subjects || [];
       const currentSubj = subjects.find((s) => s.id === selectedCourseId) || subjects[0] || null;
       if (currentSubj) selectedCourseId = currentSubj.id;
@@ -696,10 +763,14 @@
               </span>
             </div>
             <div class="admin-row-actions">
-              <button type="button" class="secondary" id="editSelectedCourseBtn">Edit Course</button>
+              ${isMaster
+                ? `<button type="button" class="secondary" id="editSelectedCourseBtn">Edit Course</button>`
+                : `<button type="button" class="secondary" id="renameSelectedCourseBtn">Rename Course</button>`}
               <button type="button" class="secondary" id="jumpImportForCourseBtn">+ Import Quiz</button>
               <button type="button" class="secondary" id="jumpLibForCourseBtn">Manage PDFs / Videos</button>
-              <button type="button" class="admin-btn-danger" id="deleteSelectedCourseBtn">Delete Course</button>
+              ${isMaster
+                ? `<button type="button" class="admin-btn-danger" id="deleteSelectedCourseBtn">Delete Course</button>`
+                : `<span class="admin-badge" title="Master Admin session required to overwrite or delete a course">Owner only</span>`}
             </div>
           </div>
 
@@ -740,7 +811,9 @@
                       <button type="button" class="secondary" data-quiz-images="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}">Images</button>
                       <button type="button" class="secondary" data-quiz-toggle-hide="${esc(quizId)}" data-next-hidden="${isHidden ? "0" : "1"}">${isHidden ? "Show" : "Hide"}</button>
                       <button type="button" class="secondary" data-quiz-rename="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}" data-quiz-custom="${src.isCustom ? "1" : "0"}">Edit / Rename</button>
-                      <button type="button" class="admin-btn-danger" data-quiz-delete="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}" data-quiz-custom="${src.isCustom ? "1" : "0"}">Delete</button>
+                      ${isMaster
+                        ? `<button type="button" class="admin-btn-danger" data-quiz-delete="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}" data-quiz-custom="${src.isCustom ? "1" : "0"}">Delete</button>`
+                        : `<span class="admin-badge" title="Master Admin session required to delete a quiz">Owner only</span>`}
                     </div>
                   </div>
                 `;
@@ -764,9 +837,61 @@
 
       if (!currentSubj) return;
 
-      body.querySelector("#editSelectedCourseBtn").addEventListener("click", () => {
-        openCourseEditorModal(currentSubj, () => renderCoursesTab(body));
-      });
+      const editCourseBtn = body.querySelector("#editSelectedCourseBtn");
+      if (editCourseBtn) {
+        editCourseBtn.addEventListener("click", () => {
+          openCourseEditorModal(currentSubj, () => renderCoursesTab(body, session));
+        });
+      }
+
+      const renameCourseBtn = body.querySelector("#renameSelectedCourseBtn");
+      if (renameCourseBtn) {
+        renameCourseBtn.addEventListener("click", () => {
+          openModal({
+            title: `Rename Course: ${state.getSubjectName(currentSubj)}`,
+            html: `
+              <form id="courseRenameForm" class="dialog-body" style="padding:0;">
+                <label class="admin-field">
+                  <span>Course Name</span>
+                  <input type="text" id="crNameInput" required maxlength="120" value="${esc(state.getSubjectName(currentSubj))}">
+                </label>
+                <div id="crErr" class="dialog-error hidden"></div>
+                <div class="inline" style="justify-content:flex-end;">
+                  <button type="button" class="secondary" data-modal-close>Cancel</button>
+                  <button type="submit" class="primary" id="crSubmit">Save Name</button>
+                </div>
+              </form>
+            `,
+            onMount: (dlg) => {
+              dlg.querySelector("#courseRenameForm").addEventListener("submit", async (e) => {
+                e.preventDefault();
+                const errEl = dlg.querySelector("#crErr");
+                const btn = dlg.querySelector("#crSubmit");
+                errEl.classList.add("hidden");
+                btn.disabled = true;
+                try {
+                  const name = dlg.querySelector("#crNameInput").value.trim();
+                  const { res, data } = await apiFetch("/api/admin/subjects/name", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ subjectId: currentSubj.id, name }),
+                  });
+                  if (!res.ok || !data || !data.ok) throw new Error((data && data.error) || "Rename failed.");
+                  await syncCatalog();
+                  dlg.close();
+                  toast("Course renamed.");
+                  renderCoursesTab(body, session);
+                } catch (ex) {
+                  errEl.textContent = ex.message || "Error renaming course.";
+                  errEl.classList.remove("hidden");
+                } finally {
+                  btn.disabled = false;
+                }
+              });
+            },
+          });
+        });
+      }
 
       body.querySelector("#jumpImportForCourseBtn").addEventListener("click", () => {
         importerDraftState.subjectId = currentSubj.id;
@@ -777,27 +902,31 @@
         if (container._switchAdminTab) container._switchAdminTab("library");
       });
 
-      body.querySelector("#deleteSelectedCourseBtn").addEventListener("click", async () => {
-        const ok = await confirmModal({
-          title: "Delete Entire Course?",
-          message: `This will permanently remove "${state.getSubjectName(currentSubj)}" (${currentSubj.id}), all custom quizzes, uploaded R2 PDFs, videos, reports, and scores for this course.`,
-          confirmLabel: "Permanently Delete Course",
-          danger: true,
+      const delSelectedCourseBtn = body.querySelector("#deleteSelectedCourseBtn");
+      if (delSelectedCourseBtn) {
+        delSelectedCourseBtn.addEventListener("click", async () => {
+          const ok = await confirmModal({
+            title: "Delete Entire Course?",
+            message: `This will permanently delete "${state.getSubjectName(currentSubj)}" (${currentSubj.id}), its custom quizzes, uploaded R2 PDFs, videos, question reports, and leaderboard best scores for this course. Student attempt history is kept.`,
+            confirmLabel: "Permanently Delete Course",
+            danger: true,
+          });
+          if (!ok) return;
+          const { res, data } = await apiFetch(`/api/admin/subjects?subjectId=${encodeURIComponent(currentSubj.id)}`, {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subjectId: currentSubj.id, isBundled: !currentSubj.isCustom }),
+          });
+          if (!res.ok || !data || !data.ok) {
+            if (handleMasterAuthFailure(res, data)) return;
+            toast((data && data.error) || "Could not delete course.");
+            return;
+          }
+          await syncCatalog();
+          toast("Course permanently deleted.");
+          renderCoursesTab(body);
         });
-        if (!ok) return;
-        const { res, data } = await apiFetch(`/api/admin/subjects?subjectId=${encodeURIComponent(currentSubj.id)}`, {
-          method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ subjectId: currentSubj.id, isBundled: !currentSubj.isCustom }),
-        });
-        if (!res.ok || !data || !data.ok) {
-          toast((data && data.error) || "Could not delete course.");
-          return;
-        }
-        await syncCatalog();
-        toast("Course permanently deleted.");
-        renderCoursesTab(body);
-      });
+      }
 
       body.querySelectorAll("[data-course-kind]").forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -845,10 +974,12 @@
               return;
             }
             const draftByQId = {};
+            const initialUrlsByQId = {};
             const hadInitialImage = new Set();
             qs.forEach((q) => {
               const cur = getQImages(q).map((it) => Object.assign({}, it));
               draftByQId[q.id] = cur;
+              initialUrlsByQId[q.id] = new Set(cur.map((it) => it && it.url).filter(Boolean));
               if (cur.length > 0) hadInitialImage.add(q.id);
             });
             let activeQId = qs[0].id;
@@ -945,7 +1076,7 @@
                         const withCount = qs.filter((q) => (draftByQId[q.id] || []).length > 0).length;
                         dirtyLabel.textContent = `${withCount} of ${qs.length} questions have images · Unsaved changes`;
                       }
-                    });
+                    }, { lockedUrls: isMaster ? null : (initialUrlsByQId[activeQId] || null) });
                   }
                 }
 
@@ -977,6 +1108,7 @@
                       body: JSON.stringify({ subjectId: currentSubj.id, quizId, imagesByQuestionId }),
                     });
                     if (!res.ok || !data || !data.ok) {
+                      if (handleMasterAuthFailure(res, data)) return;
                       toast((data && data.error) || "Could not save quiz images.");
                       return;
                     }
@@ -1067,7 +1199,7 @@
           const isBundled = btn.getAttribute("data-quiz-custom") !== "1";
           const ok = await confirmModal({
             title: "Delete Quiz?",
-            message: `Permanently delete "${qTitle}" (${quizId}) and all its scores/reports from ${state.getSubjectName(currentSubj)}?`,
+            message: `Permanently delete "${qTitle}" (${quizId}), its leaderboard best scores, and question reports from ${state.getSubjectName(currentSubj)}? Student attempt history is kept.`,
             confirmLabel: "Delete Quiz",
             danger: true,
           });
@@ -1083,6 +1215,7 @@
             body: JSON.stringify({ subjectId: currentSubj.id, quizId, isBundled }),
           });
           if (!res.ok || !data || !data.ok) {
+            if (handleMasterAuthFailure(res, data)) return;
             toast((data && data.error) || "Could not delete quiz.");
             return;
           }
@@ -1096,7 +1229,9 @@
     // ------------------------------------------------------------------------
     // TAB 2: PER-COURSE & SEPARATED PDF / VIDEO LIBRARY (+ MODAL FORMS)
     // ------------------------------------------------------------------------
-    async function renderLibraryTab(body) {
+    async function renderLibraryTab(body, sessionArg) {
+      const session = sessionArg || activeAdminSession || { role: "coadmin" };
+      const isMaster = session.role === "master";
       const lib = state.getContentLibrary();
       const subjects = catalog.subjects || [];
       if (selectedCourseId && !subjects.some((s) => s.id === selectedCourseId) && selectedCourseId !== "__all__") {
@@ -1115,7 +1250,14 @@
           body: JSON.stringify({ overrides: lib.getState(), baseUpdatedAt, force: Boolean(force) }),
         });
         if (!res.ok || !data || !data.ok) {
+          if (handleMasterAuthFailure(res, data)) return false;
           if (res.status === 409) {
+            if (!isMaster) {
+              toast("Library conflict detected — refreshing server copy.");
+              await syncCatalog();
+              renderLibraryTab(body, session);
+              return false;
+            }
             const okForce = await confirmModal({
               title: "Library Conflict Detected",
               message: "Another admin edited the library just now. Overwrite with your latest change?",
@@ -1200,11 +1342,13 @@
             </div>
             <div class="admin-row-actions">
               ${openHref ? `<a href="${esc(openHref)}" target="_blank" rel="noopener noreferrer" class="secondary">Open ↗</a>` : ""}
-              <button type="button" class="secondary" data-lib-edit="${kindPrefix}" data-item-id="${esc(item.id)}">Edit</button>
+              ${isMaster ? `<button type="button" class="secondary" data-lib-edit="${kindPrefix}" data-item-id="${esc(item.id)}">Edit</button>` : ""}
               ${isArchived
                 ? `<button type="button" class="secondary" data-lib-action="restore-${kindPrefix}" data-item-id="${esc(item.id)}">Restore</button>`
                 : `<button type="button" class="secondary" data-lib-action="${isActive ? `deactivate-${kindPrefix}` : `activate-${kindPrefix}`}" data-item-id="${esc(item.id)}">${isActive ? "Hide" : "Show"}</button>`}
-              <button type="button" class="admin-btn-danger" data-lib-hard-delete="${kindPrefix}" data-item-id="${esc(item.id)}" data-item-title="${esc(item.title || item.id)}" data-item-path="${esc(item.path || "")}">Delete</button>
+              ${isMaster
+                ? `<button type="button" class="admin-btn-danger" data-lib-hard-delete="${kindPrefix}" data-item-id="${esc(item.id)}" data-item-title="${esc(item.title || item.id)}" data-item-path="${esc(item.path || "")}">Delete</button>`
+                : `<span class="admin-badge" title="Master Admin session required to permanently delete library files or items">Owner only</span>`}
             </div>
           </div>
         `;
@@ -1529,6 +1673,7 @@
               body: JSON.stringify({ id: itemId, path: itemPath }),
             });
             if (!res.ok || !data || !data.ok) {
+              if (handleMasterAuthFailure(res, data)) return;
               toast((data && data.error) || "Storage file delete failed.");
               return;
             }
@@ -1550,7 +1695,9 @@
     // ------------------------------------------------------------------------
     // TAB 3: LIVE QUIZ IMPORTER + READY-TO-COPY AI PROMPTS
     // ------------------------------------------------------------------------
-    function renderImporterTab(body) {
+    function renderImporterTab(body, sessionArg) {
+      const session = sessionArg || activeAdminSession || { role: "coadmin" };
+      const isMaster = session.role === "master";
       const Core = root.BankQuestionCore || {};
       const subjects = catalog.subjects || [];
       if (importerDraftState.subjectId && !subjects.some((s) => s.id === importerDraftState.subjectId)) {
@@ -1847,6 +1994,7 @@
             body: JSON.stringify(toPublish),
           });
           if (!res.ok || !data || !data.ok) {
+            if (handleMasterAuthFailure(res, data)) return;
             toast((data && data.error) || "Failed to publish quiz.");
             return;
           }
@@ -1878,7 +2026,9 @@
     // ------------------------------------------------------------------------
     // TAB 4: QUESTION REPORTS (MODAL NOTE + HARD DELETE)
     // ------------------------------------------------------------------------
-    async function renderReportsTab(body) {
+    async function renderReportsTab(body, sessionArg) {
+      const session = sessionArg || activeAdminSession || { role: "coadmin" };
+      const isMaster = session.role === "master";
       let status = "open";
       async function load() {
         body.innerHTML = `<p class="question-meta">Loading question reports...</p>`;
@@ -1913,7 +2063,9 @@
                     <button type="button" class="primary" data-resolve="${esc(r.id)}" data-next="resolved">Resolve</button>
                     <button type="button" class="secondary" data-resolve="${esc(r.id)}" data-next="dismissed">Dismiss</button>
                     ${r.status !== "open" ? `<button type="button" class="quiet" data-resolve="${esc(r.id)}" data-next="open">Reopen</button>` : ""}
-                    <button type="button" class="admin-btn-danger" data-del-report="${esc(r.id)}">Delete</button>
+                    ${isMaster
+                      ? `<button type="button" class="admin-btn-danger" data-del-report="${esc(r.id)}">Delete</button>`
+                      : `<span class="admin-badge" title="Master Admin session required to delete reports">Owner only</span>`}
                   </div>
                 </div>
               `).join("")}
@@ -1972,6 +2124,7 @@
             if (!ok) return;
             const { res: r2, data: d2 } = await apiFetch(`/api/admin/reports?id=${encodeURIComponent(id)}`, { method: "DELETE" });
             if (!r2.ok || !d2 || !d2.ok) {
+              if (handleMasterAuthFailure(r2, d2)) return;
               toast((d2 && d2.error) || "Could not delete report.");
               return;
             }
@@ -2062,7 +2215,7 @@
                         <span class="admin-badge">${u.isGuest ? "Guest (No Password)" : "Registered"}</span>
                         ${areaLabel ? `<span class="admin-badge">📍 ${esc(areaLabel)}</span>` : ""}
                       </div>
-                      <span class="question-meta">ID: ${esc(u.studentId)} · Last active: ${esc(seenText)}</span>
+                      <span class="question-meta">${u.studentId ? `ID: ${esc(u.studentId)} · ` : ""}Last active: ${esc(seenText)}</span>
                     </div>
                   </div>
                 `;
@@ -2116,24 +2269,26 @@
           ` : `
             <div class="admin-list">
               ${users.map((u) => {
-                const isGuest = String(u.studentId || "").startsWith("gst_");
+                const hasPassword = u.hasPassword !== undefined
+                  ? Boolean(u.hasPassword)
+                  : !String(u.studentId || "").startsWith("gst_");
                 return `
                   <div class="admin-row is-compact">
                     <div class="admin-row-main">
                       <div class="admin-row-title-line">
                         <strong>${esc(u.username)}</strong>
                         ${u.isAdmin ? `<span class="admin-badge is-accent">🛡️ Admin (Co-Admin)</span>` : ""}
-                        <span class="admin-badge">${isGuest ? "Guest (No Password)" : "Registered"}</span>
+                        <span class="admin-badge">${hasPassword ? "Registered" : "Guest (No Password)"}</span>
                       </div>
-                      <span class="question-meta">ID: ${esc(u.studentId)} · Joined: ${esc(String(u.createdAt || "").slice(0, 10))}</span>
+                      <span class="question-meta">${u.studentId ? `ID: ${esc(u.studentId)} · ` : ""}Joined: ${esc(String(u.createdAt || "").slice(0, 10))}</span>
                     </div>
                     <div class="admin-row-actions">
                       ${session.role === "master" ? `
                         <button type="button" class="${u.isAdmin ? "secondary" : "primary"}" data-role-id="${esc(u.studentId)}" data-role-name="${esc(u.username)}" data-next-admin="${u.isAdmin ? "0" : "1"}">
                           ${u.isAdmin ? "Revoke Admin" : "Make Admin"}
                         </button>
-                      ` : ""}
-                      <button type="button" class="admin-btn-danger" data-del-user="${esc(u.studentId)}" data-del-name="${esc(u.username)}">Delete</button>
+                        <button type="button" class="admin-btn-danger" data-del-user="${esc(u.studentId)}" data-del-name="${esc(u.username)}">Delete</button>
+                      ` : `<span class="admin-badge" title="Master Admin session required">Owner only</span>`}
                     </div>
                   </div>
                 `;
@@ -2177,12 +2332,22 @@
             const studentId = btn.getAttribute("data-role-id");
             const uname = btn.getAttribute("data-role-name") || studentId;
             const isAdmin = btn.getAttribute("data-next-admin") === "1";
+            const ok = await confirmModal({
+              title: isAdmin ? `Grant Co-Admin to ${uname}?` : `Revoke Co-Admin from ${uname}?`,
+              message: isAdmin
+                ? `Grant Co-Admin access to "${uname}"? Co-Admins can create, edit, hide, and import courses/quizzes, upload PDFs/videos, manage reports, and edit site settings — but cannot grant/revoke roles or delete users, courses, or quizzes.`
+                : `Revoke Co-Admin access from "${uname}"? They will immediately lose Admin Portal access and return to a standard student account.`,
+              confirmLabel: isAdmin ? "Grant Co-Admin" : "Revoke Co-Admin",
+              danger: !isAdmin,
+            });
+            if (!ok) return;
             const { res: r2, data: d2 } = await apiFetch("/api/admin/users/role", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ studentId, isAdmin }),
             });
             if (!r2.ok || !d2 || !d2.ok) {
+              if (handleMasterAuthFailure(r2, d2)) return;
               toast((d2 && d2.error) || "Role update failed.");
               return;
             }
@@ -2207,6 +2372,7 @@
               body: JSON.stringify({ studentId }),
             });
             if (!r2.ok || !d2 || !d2.ok) {
+              if (handleMasterAuthFailure(r2, d2)) return;
               toast((d2 && d2.error) || "Delete failed.");
               return;
             }

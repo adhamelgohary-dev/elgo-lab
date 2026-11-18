@@ -43,6 +43,14 @@
   border: 1px solid var(--accent-border);
 }
 
+.player-meta strong,
+.question-stem,
+.review-item,
+.results-hero {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
 .player-timer {
   font-family: var(--font-mono);
   font-size: 0.88rem;
@@ -508,7 +516,7 @@
 .results-stats-row,
 .results-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
   gap: 10px;
 }
 
@@ -613,6 +621,20 @@
   .player-shortcut-hint {
     display: none;
   }
+
+  .player-topbar button,
+  .question-actions-inline button,
+  .player-footer-nav button,
+  .player-finish-dialog button,
+  .results-card button,
+  .nav-dot {
+    min-height: 44px;
+  }
+
+  .player-footer-nav > button {
+    flex: 1 1 8rem;
+  }
+
 }
 
 @media (max-width: 350px) {

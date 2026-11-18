@@ -77,6 +77,18 @@
     const fetchImpl = opts.fetch || (typeof fetch === "function" ? fetch : null);
     const apiBase = String(opts.apiBase || "/api").replace(/\/+$/, "");
     const getAuthToken = typeof opts.getAuthToken === "function" ? opts.getAuthToken : () => "";
+    const getStudentId = typeof opts.getStudentId === "function" ? opts.getStudentId : () => "";
+    const getAuthGeneration = typeof opts.getAuthGeneration === "function" ? opts.getAuthGeneration : null;
+    const onUnauthorized = typeof opts.onUnauthorized === "function" ? opts.onUnauthorized : null;
+
+    function isSameSessionContext(reqToken, reqStudentId, reqGen) {
+      if (reqGen != null && getAuthGeneration && getAuthGeneration() !== reqGen) return false;
+      const curToken = String(getAuthToken() || "");
+      const curStudentId = String(getStudentId() || "").trim();
+      if (reqToken && curToken !== reqToken) return false;
+      if (reqStudentId && curStudentId !== reqStudentId) return false;
+      return true;
+    }
 
     function readJson(key, fallback) {
       if (!storage) return fallback;
@@ -178,6 +190,8 @@
       // Renaming the server account requires a logged-in session. Guests only keep a local
       // nickname (they cannot appear on the global leaderboard until they log in).
       const renameToken = String(getAuthToken() || "");
+      const renameStudentId = String(getStudentId() || "").trim();
+      const renameGen = getAuthGeneration ? getAuthGeneration() : null;
       if (fetchImpl && renameToken) {
         try {
           const res = await fetchImpl(`${apiBase}/user/profile`, {
@@ -185,6 +199,9 @@
             headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${renameToken}` },
             body: JSON.stringify({ username: nextUsername }),
           });
+          if (!isSameSessionContext(renameToken, renameStudentId, renameGen)) {
+            return { ok: false, stale: true, message: "Session changed during profile update." };
+          }
           if (res && typeof res.json === "function") {
             const data = await res.json().catch(() => null);
             if (res.status === 409 || (data && data.reason === "username-taken")) {
@@ -224,6 +241,9 @@
         }
       }
 
+      if (!isSameSessionContext(renameToken, renameStudentId, renameGen)) {
+        return { ok: false, stale: true, message: "Session changed during profile update." };
+      }
       const updated = {
         playerId: current.playerId,
         username: nextUsername,
@@ -238,6 +258,8 @@
     async function deleteUserProfile(options) {
       const current = getProfile();
       const token = String(getAuthToken() || "");
+      const reqStudentId = String(getStudentId() || "").trim();
+      const reqGen = getAuthGeneration ? getAuthGeneration() : null;
       if (fetchImpl && token) {
         // Server account deletion needs the session AND the password (re-authentication).
         try {
@@ -246,6 +268,9 @@
             headers: { "Content-Type": "application/json", Accept: "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify({ password: String((options && options.password) || "") })
           });
+          if (!isSameSessionContext(token, reqStudentId, reqGen)) {
+            return { ok: false, stale: true, message: "Session changed during request." };
+          }
           if (res && !res.ok) {
             const data = res.json ? await res.json().catch(() => null) : null;
             return { ok: false, message: (data && data.error) || "Could not delete the account." };
@@ -316,8 +341,10 @@
 
     function queueAttempt(attempt) {
       const pending = readPendingAttempts();
-      if (!pending.some((item) => item && item.attemptId === attempt.attemptId)) {
-        pending.push(attempt);
+      const ownerStudentId = String((attempt && attempt.ownerStudentId) || getStudentId() || "").trim();
+      const entry = ownerStudentId ? Object.assign({}, attempt, { ownerStudentId }) : Object.assign({}, attempt);
+      if (!pending.some((item) => item && item.attemptId === entry.attemptId)) {
+        pending.push(entry);
         writePendingAttempts(pending);
       }
     }
@@ -329,9 +356,12 @@
      * score/total/percentage the client might add. Returns { data } on success, { drop: true }
      * when the server will never accept this attempt, or { retry: true } for transient problems.
      */
-    async function postAttempt(attempt) {
+    async function postAttempt(attempt, reqContext) {
       if (!fetchImpl) return { retry: true };
-      const authToken = String(getAuthToken() || "");
+      const ctx = reqContext || {};
+      const authToken = ctx.token !== undefined ? String(ctx.token || "") : String(getAuthToken() || "");
+      const reqStudentId = ctx.studentId !== undefined ? String(ctx.studentId || "").trim() : String(getStudentId() || "").trim();
+      const reqGen = ctx.authGeneration !== undefined ? ctx.authGeneration : (getAuthGeneration ? getAuthGeneration() : null);
       if (!authToken) return { retry: true };
       try {
         const res = await fetchImpl(`${apiBase}/quiz/submit`, {
@@ -348,8 +378,18 @@
             submittedAt: attempt.submittedAt,
           }),
         });
+        if (!isSameSessionContext(authToken, reqStudentId, reqGen)) {
+          return { stale: true, retry: false };
+        }
         const data = res && typeof res.json === "function" ? await res.json().catch(() => null) : null;
+        if (!isSameSessionContext(authToken, reqStudentId, reqGen)) {
+          return { stale: true, retry: false };
+        }
         if (res && res.ok && data && data.ok) return { data };
+        if (res && res.status === 401) {
+          if (onUnauthorized) onUnauthorized({ token: authToken, studentId: reqStudentId, authGeneration: reqGen });
+          return { drop: true, unauthorized: true };
+        }
         if (res && PERMANENT_REJECTIONS.indexOf(res.status) !== -1) return { drop: true };
         return { retry: true };
       } catch (_err) {
@@ -360,15 +400,38 @@
     async function syncPendingAttempts() {
       const pending = readPendingAttempts();
       if (!pending.length || !fetchImpl) return { synced: 0, pending: pending.length };
+      const activeStudentId = String(getStudentId() || "").trim();
+      const activeToken = String(getAuthToken() || "");
+      const activeGen = getAuthGeneration ? getAuthGeneration() : null;
+      if (!activeToken) return { synced: 0, pending: pending.length };
       const unsynced = [];
       let synced = 0;
+      let droppedForeign = 0;
       for (let index = 0; index < pending.length; index += 1) {
-        const outcome = await postAttempt(pending[index]);
+        if (!isSameSessionContext(activeToken, activeStudentId, activeGen)) {
+          return { synced, pending: unsynced.length, stale: true, droppedForeign };
+        }
+        const entry = pending[index];
+        const entryOwner = entry && typeof entry.ownerStudentId === "string" ? entry.ownerStudentId.trim() : "";
+        if (entryOwner && activeStudentId && entryOwner !== activeStudentId) {
+          droppedForeign += 1;
+          continue;
+        }
+        const outcome = await postAttempt(entry, { token: activeToken, studentId: activeStudentId, authGeneration: activeGen });
+        if (outcome.unauthorized) {
+          return { synced, pending: 0, unauthorized: true, droppedForeign };
+        }
+        if (outcome.stale || !isSameSessionContext(activeToken, activeStudentId, activeGen)) {
+          return { synced, pending: unsynced.length, stale: true, droppedForeign };
+        }
         if (outcome.data) synced += 1;
-        else if (!outcome.drop) unsynced.push(pending[index]);
+        else if (!outcome.drop) unsynced.push(entry);
+      }
+      if (!isSameSessionContext(activeToken, activeStudentId, activeGen)) {
+        return { synced, pending: unsynced.length, stale: true, droppedForeign };
       }
       writePendingAttempts(unsynced);
-      return { synced, pending: unsynced.length };
+      return { synced, pending: unsynced.length, droppedForeign };
     }
 
     async function submitQuizAttempt(payload) {
@@ -398,11 +461,17 @@
       attemptData.createdAt = attemptData.submittedAt;
 
       const localEntry = recordLocalAttempt(attemptData);
-      if (!String(getAuthToken() || "")) {
+      const submitToken = String(getAuthToken() || "");
+      const submitStudentId = String(getStudentId() || "").trim();
+      const submitGen = getAuthGeneration ? getAuthGeneration() : null;
+      if (!submitToken) {
         // Guests keep local progress only; ranked results require a login.
         return { ok: true, online: false, localOnly: true, attempt: localEntry };
       }
-      const outcome = await postAttempt(attemptData);
+      const outcome = await postAttempt(attemptData, { token: submitToken, studentId: submitStudentId, authGeneration: submitGen });
+      if (outcome.stale) {
+        return { ok: true, online: false, stale: true, attempt: localEntry };
+      }
       if (outcome.data) {
         return { ok: true, online: true, attempt: outcome.data.attempt || localEntry, rank: outcome.data.rank || null };
       }
@@ -412,7 +481,9 @@
 
       // A failed request must not make a completed quiz private to this browser.
       // Persist it and retry on the next leaderboard visit / page start.
-      queueAttempt(attemptData);
+      if (isSameSessionContext(submitToken, submitStudentId, submitGen)) {
+        queueAttempt(attemptData);
+      }
       return { ok: true, online: false, pending: true, attempt: localEntry };
     }
 
@@ -601,6 +672,7 @@
       deleteUserProfile,
       submitQuizAttempt,
       syncPendingAttempts,
+      getPendingCount: () => readPendingAttempts().length,
       fetchLeaderboard,
       computeLocalLeaderboard,
       rankLeaderboardEntries,

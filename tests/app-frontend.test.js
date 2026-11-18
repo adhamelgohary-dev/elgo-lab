@@ -1046,7 +1046,8 @@ test("admin portal, leaderboard UI, and built lecture pages wire category filter
   const shellJs = fs.readFileSync(path.join(ROOT, "src/app/shell.js"), "utf8");
   assert.match(panelsJs, /#lbQuickJoinForm/);
   assert.match(playerJs, /#resQuickRankForm/);
-  assert.match(shellJs, /Name Only \(No Password\)/);
+  assert.match(shellJs, /authTabGuest/);
+  assert.match(fs.readFileSync(path.join(ROOT, "src/app/state.js"), "utf8"), /Name Only \(No Password\)/);
 
   const hubJs = fs.readFileSync(path.join(ROOT, "src/app/hub.js"), "utf8");
   assert.match(hubJs, /#downloadOfflineQuizBtn/);

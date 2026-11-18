@@ -12,7 +12,30 @@ const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
 const SUBJECTS_DIR = path.join(ROOT, "content", "subjects");
+const LIBRARY_DIR = path.join(ROOT, "content", "library");
 const OUT_FILE = path.join(ROOT, "backend", "answer-key.js");
+
+function loadLibraryType(fileName) {
+  const full = path.join(LIBRARY_DIR, fileName);
+  if (!fs.existsSync(full)) return {};
+  const list = JSON.parse(fs.readFileSync(full, "utf8"));
+  const out = {};
+  if (!Array.isArray(list)) return out;
+  for (const item of list) {
+    if (!item || typeof item !== "object" || typeof item.id !== "string" || !item.id) continue;
+    const clean = {};
+    for (const [k, v] of Object.entries(item)) {
+      if (k === "__proto__" || k === "constructor" || k === "active" || k === "updatedAt") continue;
+      if (typeof v === "string" || typeof v === "number" || typeof v === "boolean" || v === null) {
+        clean[k] = v;
+      } else if (Array.isArray(v) && v.every((x) => typeof x === "string")) {
+        clean[k] = v;
+      }
+    }
+    out[item.id] = clean;
+  }
+  return out;
+}
 
 function loadSubjects() {
   if (!fs.existsSync(SUBJECTS_DIR)) {
@@ -92,6 +115,11 @@ function buildAnswerKey() {
     (subj.sheets || []).forEach((sh) => registerCollection(subj.id, sh, "sheet", sh.questions));
   }
 
+  const bundledLibrary = {
+    pdfs: loadLibraryType("pdfs.json"),
+    videos: loadLibraryType("videos.json"),
+  };
+
   return {
     generatedAt: new Date().toISOString(),
     totalQuestions,
@@ -99,6 +127,7 @@ function buildAnswerKey() {
     collections,
     byInternalId,
     byOriginalId,
+    bundledLibrary,
   };
 }
 

@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL DEFAULT '',
   is_admin INTEGER NOT NULL DEFAULT 0,
   progress_json TEXT NOT NULL DEFAULT '{}',
+  progress_rev INTEGER NOT NULL DEFAULT 0,
+  progress_write_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -194,7 +196,7 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
   user_agent TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  is_master_admin INTEGER NOT NULL DEFAULT 1,   -- only rows with 1 and an empty student_id are honoured
+  is_master_admin INTEGER NOT NULL DEFAULT 0,   -- only rows with 1 and an empty student_id are honoured
   student_id TEXT DEFAULT ''
 );
 
