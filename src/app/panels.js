@@ -1115,12 +1115,17 @@
         det.addEventListener("toggle", async function () {
           if (!det.open) return;
           var body = det.querySelector(".mistake-exp-body");
-          var subjId = det.getAttribute("data-exp-subject");
           var expId = det.getAttribute("data-exp-id");
-          var map = await state.loadSubjectExplanations(subjId);
-          var exp = map[expId] || {};
-          var en = exp.academicExplanation || exp.correctReasoning || "";
-          var ar = exp.arabicExplanation || exp.arabicTranslation || "";
+          var exp;
+          try {
+            exp = await root.ElgoPlayer.loadStudyFeedback(expId);
+          } catch (_error) {
+            body.textContent = txt("Sign in and finish any active Test to view this note online.", "سجّل الدخول وأنهِ أي اختبار جارٍ لعرض الشرح.");
+            return;
+          }
+          if (!exp) return;
+          var en = exp.academicExplanation || exp.correctReasoning || exp.explanation || "";
+          var ar = exp.explanationArabic || exp.arabicExplanation || exp.arabicTranslation || "";
           var rule = exp.rule || "";
           if (!en && !ar && !rule) {
             body.textContent = "No detailed note attached for this item yet.";

@@ -202,9 +202,9 @@
       "var toggleKeyBtn=document.getElementById('toggleStudyBtn');",
       "var themeBtn=document.getElementById('themeBtn');",
       "var printBtn=document.getElementById('printBtn');",
-      "var studyMode=false;",
+      "var studyMode=false;var hasFeedback=payload.some(function(q){return q.correctOptionId||q.en||q.ar||q.rule;});",
       "var chosen={};",
-      "function updateScore(){var right=0,answered=0;payload.forEach(function(q,i){if(chosen[i]){answered++;if(chosen[i]===q.correctOptionId)right++;}});scoreEl.textContent='Score: '+right+' / '+payload.length+' ('+answered+' answered)';}",
+      "function updateScore(){var right=0,answered=0;payload.forEach(function(q,i){if(chosen[i]){answered++;if(chosen[i]===q.correctOptionId)right++;}});scoreEl.textContent=hasFeedback?'Score: '+right+' / '+payload.length+' ('+answered+' answered)':answered+' / '+payload.length+' answered';}",
       "function render(){host.innerHTML='';payload.forEach(function(q,qi){",
       "  var card=document.createElement('article');card.className='card';",
       "  var num=document.createElement('div');num.className='q-num';num.textContent='Question '+q.num+' of '+payload.length;",
@@ -228,7 +228,7 @@
       "  q.options.forEach(function(o){",
       "    var b=document.createElement('button');b.type='button';b.className='opt-btn';",
       "    if(reveal&&q.correctOptionId&&o.id===q.correctOptionId)b.classList.add('is-correct');",
-      "    else if(sel&&o.id===sel&&q.correctOptionId&&o.id!==q.correctOptionId)b.classList.add('is-wrong');",
+      "    else if(sel&&o.id===sel){if(q.correctOptionId)b.classList.add('is-wrong');else b.setAttribute('style','outline:2px solid var(--accent)');}",
       "    var k=document.createElement('span');k.className='opt-key';k.textContent=o.id;",
       "    var t=document.createElement('span');t.textContent=o.text;",
       "    b.appendChild(k);b.appendChild(t);",
@@ -248,7 +248,7 @@
       "toggleKeyBtn.addEventListener('click',function(){studyMode=!studyMode;render();});",
       "themeBtn.addEventListener('click',function(){var next=document.documentElement.getAttribute('data-theme')==='daylight'?'evening':'daylight';document.documentElement.setAttribute('data-theme',next);themeBtn.textContent=next==='daylight'?'Evening':'Daylight';});",
       "printBtn.addEventListener('click',function(){window.print();});",
-      "render();",
+      "toggleKeyBtn.hidden=!hasFeedback;render();",
       "})();"
     ].join("");
 

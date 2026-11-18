@@ -55,6 +55,7 @@ function buildAnswerKey() {
   const collections = {};
   const byInternalId = {};
   const byOriginalId = {};
+  const explanations = {};
   let totalQuestions = 0;
 
   function registerCollection(subjectId, col, sourceType, questions) {
@@ -69,6 +70,12 @@ function buildAnswerKey() {
       if (!q || !q.id) return;
       totalQuestions += 1;
       const internalId = q.internalId || `${subjectId}::${sourceType}::${col.id}::${q.id}`;
+      const details = {};
+      for (const field of ["explanation", "explanationArabic", "arabicTranslation", "academicExplanation", "correctReasoning", "wrongAnswerClarification", "memoryTrick", "rule", "whyYouMightErr", "teachingReview"]) {
+        if (typeof q[field] === "string" && q[field]) details[field] = q[field];
+      }
+      if (details.explanationArabic) details.arabicExplanation = details.explanationArabic;
+      explanations[internalId] = details;
       const ans = q.correctOptionId != null ? String(q.correctOptionId).trim().toUpperCase() : "";
       if (ans) {
         gradableQuestions += 1;
@@ -127,12 +134,13 @@ function buildAnswerKey() {
     collections,
     byInternalId,
     byOriginalId,
+    explanations,
     bundledLibrary,
   };
 }
 
 function writeAnswerKey(outPath) {
-  const key = buildAnswerKey();
+  const { explanations, ...key } = buildAnswerKey();
   const target = outPath || OUT_FILE;
   const content =
     `"use strict";\n` +
@@ -140,6 +148,10 @@ function writeAnswerKey(outPath) {
     `module.exports = ${JSON.stringify(key, null, 2)};\n`;
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, content, "utf8");
+  if (!outPath) {
+    fs.writeFileSync(path.join(path.dirname(target), "question-explanations.generated.js"),
+      `"use strict";\nmodule.exports = ${JSON.stringify(explanations)};\n`, "utf8");
+  }
   return key;
 }
 

@@ -111,7 +111,6 @@ function buildPublicSite(options) {
   const searchQuestions = [];
 
   for (const subj of subjects) {
-    const expMap = {};
     let subjectQuestionCount = 0;
 
     function processCollection(col, type, questionsList) {
@@ -131,29 +130,6 @@ function buildPublicSite(options) {
 
       const strippedQuestions = qs.map((q) => {
         const internalId = q.internalId || `${subj.id}::${type}::${col.id}::${q.id}`;
-        if (
-          q.explanation ||
-          q.explanationArabic ||
-          q.arabicTranslation ||
-          q.academicExplanation ||
-          q.correctReasoning ||
-          q.wrongAnswerClarification ||
-          q.memoryTrick ||
-          q.rule ||
-          q.whyYouMightErr
-        ) {
-          expMap[internalId] = {
-            arabicTranslation: q.arabicTranslation || "",
-            academicExplanation: q.academicExplanation || q.explanation || "",
-            arabicExplanation: q.explanationArabic || "",
-            correctReasoning: q.correctReasoning || "",
-            wrongAnswerClarification: q.wrongAnswerClarification || "",
-            memoryTrick: q.memoryTrick || "",
-            rule: q.rule || "",
-            whyYouMightErr: q.whyYouMightErr || "",
-            teachingReview: q.teachingReview || "",
-          };
-        }
 
         searchQuestions.push({
           internalId,
@@ -163,17 +139,12 @@ function buildPublicSite(options) {
           text: q.question || q.text || "",
         });
 
-        const cleanQ = Object.assign({}, q, { internalId });
-        delete cleanQ.explanation;
-        delete cleanQ.explanationArabic;
-        delete cleanQ.arabicTranslation;
-        delete cleanQ.academicExplanation;
-        delete cleanQ.correctReasoning;
-        delete cleanQ.wrongAnswerClarification;
-        delete cleanQ.memoryTrick;
-        delete cleanQ.rule;
-        delete cleanQ.whyYouMightErr;
-        delete cleanQ.teachingReview;
+        const cleanQ = { internalId, isGradable: Boolean(q.correctOptionId) };
+        for (const name of ["id", "number", "question", "text", "lectureTag", "lectureTags", "section", "difficulty", "image", "imageAlt", "imageCaption", "preserveExplanation"]) {
+          if (q[name] != null) cleanQ[name] = q[name];
+        }
+        cleanQ.options = (q.options || []).map(({ id, text, image }) => ({ id, text, image }));
+        if (Array.isArray(q.images)) cleanQ.images = q.images.map(({ url, alt, caption }) => ({ url, alt, caption }));
         return cleanQ;
       });
 
@@ -213,7 +184,7 @@ function buildPublicSite(options) {
     );
     fs.writeFileSync(
       path.join(outDir, "data", "explanations", `${subj.id}.json`),
-      JSON.stringify({ schemaVersion: 1, subjectId: subj.id, byInternalId: expMap }),
+      JSON.stringify({ schemaVersion: 1, subjectId: subj.id, byInternalId: {} }),
       "utf8"
     );
 

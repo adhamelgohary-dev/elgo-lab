@@ -1,5 +1,5 @@
 "use strict";
-const CACHE_NAME = "elgo-lab-v11";
+const CACHE_NAME = "elgo-lab-v12";
 
 const CORE_ASSETS = [
   "/",
@@ -65,6 +65,10 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith("/api/")) return;
+  if (url.pathname.startsWith("/data/explanations/") || url.pathname.startsWith("/data/subjects/")) {
+    event.respondWith(fetch(new Request(req, { cache: "no-store" })));
+    return;
+  }
 
   if (
     req.mode === "navigate" ||

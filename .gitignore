@@ -20,3 +20,6 @@ Thumbs.db
 .dev.vars.*
 *.sqlite
 *.sqlite3
+
+backend/answer-key.js
+backend/question-explanations.generated.js

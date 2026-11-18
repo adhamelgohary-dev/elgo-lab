@@ -76,7 +76,7 @@ function runChecks() {
   if (catalogTotal !== answerKey.totalQuestions) fail("Catalog and answer-key counts differ.");
   if (Object.keys(answerKey.collections).length !== catalog.sources.length) fail("Catalog collections differ from answer key.");
   for (const subject of catalog.subjects) {
-    const data = JSON.parse(fs.readFileSync(path.join(PUBLIC_DIR, "data", "subjects", subject.id + ".json"), "utf8"));
+    const data = JSON.parse(fs.readFileSync(path.join(ROOT, "content", "subjects", subject.id + ".json"), "utf8"));
     const groups = [...data.quizzes, ...data.sheets, ...data.lectures.map(l => ({id: l.id, questions: l.generatedQuiz.questions}))];
     for (const group of groups) for (const q of group.questions) {
       const entry = answerKey.byInternalId[q.internalId];
@@ -88,8 +88,11 @@ function runChecks() {
   const builtFiles = walkFiles(PUBLIC_DIR);
   for (const f of builtFiles) {
     const rel = path.relative(PUBLIC_DIR, f).replace(/\\/g, "/");
-    if (/(^|\/)(worker\.js|answer-key\.js|schema\.sql|\.dev\.vars|wrangler\.toml)$/i.test(rel)) {
+    if (/(^|\/)(worker\.js|answer-key\.js|question-explanations\.generated\.js|schema\.sql|\.dev\.vars|wrangler\.toml)$/i.test(rel)) {
       fail(`Sensitive file leaked into public/: ${rel}`);
+    }
+    if (rel.endsWith(".json") && /"(?:correctOptionId|correctAnswerText|correctAnswer|academicExplanation|correctReasoning|byOriginalId)"\s*:/.test(fs.readFileSync(f, "utf8"))) {
+      fail("Protected quiz feedback in public/: " + rel);
     }
     if (rel.endsWith(".html")) {
       const html = fs.readFileSync(f, "utf8");

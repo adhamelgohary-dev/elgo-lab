@@ -7,7 +7,7 @@
   var finishDialog = null;
   var imageLightbox = null;
   var shortcutsBound = false;
-  var loadedExplanations = {};
+  var reviewState = new WeakMap();
 
   function getQuestionImages(q) {
     var Model = root.ElgoModel;
@@ -132,15 +132,8 @@
     State.saveState(st);
   }
 
-  function enrichQuestionWithExplanation(q, subjectId) {
-    var map = loadedExplanations[subjectId] || {};
-    var extra = map[q.internalId] || map[q.id] || {};
-    if (!extra || typeof extra !== "object") return q;
-    return Object.assign({}, q, extra);
-  }
-
   function presentExplanation(q, chosenId, subjectId) {
-    var enriched = enrichQuestionWithExplanation(q, subjectId);
+    var enriched = q;
     var core = root.BankQuestionCore;
     var presenter = (root.ElgoExplanations && typeof root.ElgoExplanations.present === "function")
       ? root.ElgoExplanations
@@ -187,46 +180,115 @@
     };
   }
 
-  async function ensureExplanationsLoaded(session, container) {
+  async function requestQuizFeedback(body) {
     var State = root.ElgoState;
-    if (!State || !session) return;
-    var subjectIds = {};
-    if (session.subjectId) subjectIds[session.subjectId] = true;
-    (session.questions || []).forEach(function (q) {
-      if (q && q.subjectId) subjectIds[q.subjectId] = true;
+    var auth = State.getAuth();
+    if (!auth) throw new Error(txt("Sign in to use online quiz feedback.", "سجّل الدخول لعرض إجابات الاختبار."));
+    var res = await fetch("/api/quiz/feedback", {
+      method: "POST",
+      cache: "no-store",
+      headers: State.authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(body),
     });
-    var missing = Object.keys(subjectIds).filter(function (sid) { return !loadedExplanations[sid]; });
-    if (!missing.length) return;
-    try {
-      var anyLoaded = false;
-      for (var i = 0; i < missing.length; i += 1) {
-        var sid = missing[i];
-        var map = await State.loadSubjectExplanations(sid);
-        loadedExplanations[sid] = map || {};
-        anyLoaded = true;
+    var data = await res.json();
+    var current = State.getAuth();
+    if (!current || current.token !== auth.token) throw new Error(txt("Your account changed.", "تغيّر الحساب."));
+    if (!res.ok || !data.ok) throw new Error(data.error || txt("Feedback is unavailable.", "الإجابات غير متاحة."));
+    return data;
+  }
+
+  function getReviewState(session) {
+    if (!reviewState.has(session)) reviewState.set(session, { questions: new Map(), ready: false, error: "" });
+    return reviewState.get(session);
+  }
+
+  function loadFeedback(container, session, question, chosenId) {
+    var state = getReviewState(session);
+    var isTest = session.mode === "test";
+    if (isTest ? state.ready || state.pending : state.questions.has(question.internalId) || (!session.isStudy && !chosenId)) return;
+    if (isTest) state.pending = true;
+    else state.questions.set(question.internalId, { pending: true });
+    var request = isTest
+      ? { action: "start", attemptId: session.attemptId, questionIds: session.questions.map(function (q) { return q.internalId; }) }
+      : { action: session.mode, questionId: question.internalId, selectedOptionId: chosenId };
+    var redraw = function () {
+      if (activeSession === session && !session.completed && container.isConnected &&
+          session.questions[session.currentIndex].internalId === question.internalId) {
+        var focused = document.activeElement;
+        var selector = focused && focused.id && container.contains(focused) ? "#" + CSS.escape(focused.id) : null;
+        renderQuestionView(container, session, selector);
       }
-      if (anyLoaded && container && activeSession === session && !session.completed) {
-        renderQuestionView(container, session);
+    };
+    var pending = requestQuizFeedback(request).then(function (data) {
+      if (activeSession !== session || session.completed) return;
+      if (isTest) {
+        state.ready = true;
+      } else {
+        var details = data.feedback[question.internalId];
+        state.questions.set(question.internalId, details);
+        if (!session.isStudy && details.correctOptionId && chosenId !== details.correctOptionId) {
+          root.ElgoState.recordMistake(Object.assign({}, question, details), chosenId, {
+            subjectId: question.subjectId || session.subjectId,
+            subjectName: session.subjectName,
+            collectionId: question.collectionId || session.collectionId,
+          });
+          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
+        }
       }
-    } catch (_err) {
-      // Ignore offline explanation misses
+      redraw();
+    }).catch(function (error) {
+      if (isTest) state.error = error.message;
+      else state.questions.set(question.internalId, { error: error.message });
+      redraw();
+    });
+    if (!isTest) state.questions.set(question.internalId, { pending: pending });
+  }
+
+  function questionWithFeedback(session, question) {
+    var details = getReviewState(session).questions.get(question.internalId);
+    return details && !details.pending && !details.error ? Object.assign({}, question, details) : question;
+  }
+
+  function sanitizeTestSession(session) {
+    if (!session || session.mode !== "test" || session.completed) return;
+    session.questions = session.questions.map(function (question) {
+      var clean = Object.assign({}, question);
+      ["correctOptionId", "correctAnswer", "correctAnswerText", "explanation", "explanationArabic", "arabicExplanation",
+        "arabicTranslation", "academicExplanation", "correctReasoning", "wrongAnswerClarification", "memoryTrick",
+        "rule", "whyYouMightErr", "teachingReview"].forEach(function (key) { delete clean[key]; });
+      return clean;
+    });
+  }
+
+  async function readFinishedTest(session, unranked) {
+    if (unranked) {
+      await requestQuizFeedback({ action: "finish-unranked", attemptId: session.attemptId, answers: session.answers });
     }
+    var review = await requestQuizFeedback({ action: "review", attemptId: session.attemptId });
+    session.questions = session.questions.map(function (q) {
+      return Object.assign({}, q, review.feedback[q.internalId]);
+    });
   }
 
   async function submitAttemptToServer(session) {
     var State = root.ElgoState;
     var durationMs = Math.max(1000, Date.now() - (session.startedAt || Date.now()));
-    var questions = session.questions || [];
+    if (session.mode === "practice") {
+      await Promise.all([...getReviewState(session).questions.values()].map(function (item) { return item.pending; }));
+    }
+    var questions = (session.questions || []).map(function (q) { return questionWithFeedback(session, q); });
 
     var keyed = questions.filter(function (q) { return Boolean(q.correctOptionId); });
     var score = keyed.filter(function (q) { return session.answers[q.internalId] === q.correctOptionId; }).length;
-    var total = keyed.length || questions.length;
+    var total = session.mode === "practice"
+      ? (questions.filter(function (q) { return q.isGradable || q.correctOptionId; }).length || questions.length)
+      : (keyed.length || questions.length);
     var pct = total > 0 ? Math.round((score / total) * 100) : 0;
     var validatedByServer = false;
     var rankStatus = session.isGradableCollection ? "local_only" : "practice_mix";
     var statusMessage = session.isStudy ? "Study session completed." : "Completed locally.";
 
-    if (session.mode === "test" && session.isGradableCollection && State.getAuth()) {
+    if (session.mode === "test" && session.isGradableCollection && State.getAuth() && Object.keys(session.answers).length) {
       try {
         var res = await fetch("/api/quiz/submit", {
           method: "POST",
@@ -251,48 +313,23 @@
           statusMessage = data.attempt.countedInRanking
             ? "Verified on server & ranked on Leaderboard."
             : "Submitted to server (partial / unranked check).";
+          await readFinishedTest(session, false).catch(function () {
+            statusMessage += " " + txt("Answer review is unavailable.", "مراجعة الإجابات غير متاحة.");
+          });
         } else {
-          statusMessage = (data && data.error) || "Saved locally (server validation skipped).";
+          throw new Error((data && data.error) || "Could not submit. Try again.");
         }
-      } catch (_err) {
-        var client = State.getOnlineClient();
-        if (client && typeof client.submitQuizAttempt === "function") {
-          await client.submitQuizAttempt({
-            attemptId: session.attemptId,
-            subjectId: session.subjectId,
-            subjectName: session.subjectName,
-            quizId: session.collectionId,
-            quizTitle: session.title,
-            mode: "test",
-            score: score,
-            total: total,
-            totalQuestions: total,
-            percentage: pct,
-            durationMs: durationMs,
-            answers: session.answers,
-          }).catch(function () {});
-        }
-        statusMessage = txt("Offline — queued for leaderboard sync when back online.", "بدون اتصال — تم حفظ المحاولة لإرسالها عند عودة الإنترنت.");
+      } catch (error) {
+        throw new Error(error.message || "Could not submit. Try again.");
       }
-    } else if (session.mode === "test" && session.isGradableCollection && !State.getAuth()) {
-      var localClient = State.getOnlineClient();
-      if (localClient && typeof localClient.submitQuizAttempt === "function") {
-        await localClient.submitQuizAttempt({
-          attemptId: session.attemptId,
-          subjectId: session.subjectId,
-          subjectName: session.subjectName,
-          quizId: session.collectionId,
-          quizTitle: session.title,
-          mode: "test",
-          score: score,
-          total: total,
-          totalQuestions: total,
-          percentage: pct,
-          durationMs: durationMs,
-          answers: session.answers,
-        }).catch(function () {});
-      }
-      statusMessage = txt("Pick any name (no password needed) to rank your score on the Leaderboard.", "اكتب اسمك بس (من غير باسورد) علشان نتيجتك تدخل لوحة المتصدرين.");
+    } else if (session.mode === "test" && State.getAuth()) {
+      await readFinishedTest(session, true);
+      keyed = session.questions.filter(function (q) { return Boolean(q.correctOptionId); });
+      score = keyed.filter(function (q) { return session.answers[q.internalId] === q.correctOptionId; }).length;
+      total = session.questions.length;
+      pct = total ? Math.round(score * 100 / total) : 0;
+    } else if (session.mode === "test") {
+      throw new Error(txt("Sign in to submit your Test.", "سجّل الدخول لتسليم الاختبار."));
     } else if (keyed.length === 0) {
       statusMessage = txt("Completed (unkeyed bank questions are practice-only).", "تمت المراجعة (أسئلة بدون مفتاح إجابة رسمي).");
     }
@@ -454,7 +491,8 @@
       statusMessage: "Completed.",
     };
 
-    var wrongQuestions = (session.questions || []).filter(function (q) {
+    var reviewedQuestions = (session.questions || []).map(function (q) { return questionWithFeedback(session, q); });
+    var wrongQuestions = reviewedQuestions.filter(function (q) {
       return q.correctOptionId && session.answers[q.internalId] !== q.correctOptionId;
     });
 
@@ -466,7 +504,7 @@
     });
     var challengeUrl = location.origin + "/?challenge=" + encodeURIComponent(challengeToken);
 
-    var reviewHtml = (session.questions || []).map(function (q, idx) {
+    var reviewHtml = reviewedQuestions.map(function (q, idx) {
       var chosen = session.answers[q.internalId] || null;
       var hasKey = Boolean(q.correctOptionId);
       var isRight = hasKey && chosen === q.correctOptionId;
@@ -727,8 +765,6 @@
       return;
     }
 
-    ensureExplanationsLoaded(session, container);
-
     var State = root.ElgoState;
     var q = session.questions[session.currentIndex];
     if (!q) return;
@@ -736,6 +772,12 @@
     var total = session.questions.length;
     var chosenId = session.answers[q.internalId] || null;
     var isAnswered = Boolean(chosenId);
+    loadFeedback(container, session, q, chosenId);
+    var access = getReviewState(session);
+    var review = access.questions.get(q.internalId);
+    var accessError = session.mode === "test" ? access.error : review && review.error;
+    var waitingForTest = session.mode === "test" && !access.ready;
+    q = questionWithFeedback(session, q);
     var revealAnswer = session.isStudy || (session.mode === "practice" && isAnswered);
     var hasKey = Boolean(q.correctOptionId);
     var bookmarked = State.isBookmarked(q.internalId);
@@ -766,7 +808,7 @@
         statusLabel = txt("Selected", "مختارة");
       }
 
-      var lockBtn = session.isStudy || (session.mode === "practice" && isAnswered);
+      var lockBtn = session.isStudy || waitingForTest || (session.mode === "practice" && isAnswered);
       return [
         '<button type="button" class="' + cls + '" data-opt-id="' + esc(opt.id) + '" aria-pressed="' + (selected ? 'true' : 'false') + '"' + (lockBtn ? " disabled" : "") + '>',
         '  <span class="option-letter">' + esc(opt.id) + '</span>',
@@ -832,7 +874,7 @@
       '    <div class="inline">',
       '      <button type="button" class="quiet player-map-toggle-btn" id="toggleMapBtn" aria-controls="playerNavPanel" aria-expanded="' + (session._mobileNavOpen ? "true" : "false") + '">' + esc(txt("Map", "الخريطة")) + ' (' + answeredCount + '/' + total + ')</button>',
       '      <span class="player-timer" id="playerTimer">' + formatDuration(Date.now() - session.startedAt) + '</span>',
-      '      <button type="button" class="primary" id="finishQuizTopBtn">' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
+      '      <button type="button" class="primary" id="finishQuizTopBtn"' + (waitingForTest ? ' disabled' : '') + '>' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
       '    </div>',
       '  </div>',
       '  <div class="player-progress-bar" role="progressbar" aria-label="' + esc(session.isStudy
@@ -850,6 +892,7 @@
       '        </div>',
       '      </div>',
       '      <h2 class="question-stem" id="activeQuestionHeading" tabindex="-1">' + formatStem(q.question || q.text) + '</h2>',
+      accessError ? '<p role="status">' + esc(accessError) + ' <button type="button" class="quiet" id="retryQuizFeedbackBtn">' + esc(txt("Retry", "حاول مرة أخرى")) + '</button></p>' : '',
              renderQuestionImagesHtml(q),
       '      <div class="options-stack" id="qOptionsList">' + optionsHtml + '</div>',
              feedbackHtml,
@@ -858,7 +901,7 @@
       '        <span class="player-shortcut-hint" style="font-size:0.76rem;color:var(--muted);">' + esc(txt("Shortcuts: A–D answer · ←/→ navigate · F flag · B save", "اختصارات: A–D إجابة · ←/→ تنقل · F تمييز · B حفظ")) + '</span>',
                session.currentIndex < total - 1
                  ? '<button type="button" class="primary" id="nextQuestionBtn">' + esc(State.t("nextQuestion")) + '</button>'
-                 : '<button type="button" class="primary" id="finishQuizBottomBtn">' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
+                 : '<button type="button" class="primary" id="finishQuizBottomBtn"' + (waitingForTest ? ' disabled' : '') + '>' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
       '      </div>',
       '    </section>',
       '    <aside class="player-nav-panel' + mobileNavOpenCls + '" id="playerNavPanel" aria-label="Question navigator">',
@@ -875,6 +918,18 @@
       '  </div>',
       '</div>'
     ].join("\n");
+
+    var retryFeedback = container.querySelector("#retryQuizFeedbackBtn");
+    if (retryFeedback) retryFeedback.addEventListener("click", function () {
+      if (!State.getAuth() && root.ElgoShell && root.ElgoShell.openAuthModal) {
+        root.ElgoShell.openAuthModal("login");
+        return;
+      }
+      access.pending = false;
+      access.error = "";
+      access.questions.delete(q.internalId);
+      renderQuestionView(container, session, "#activeQuestionHeading");
+    });
 
     if (focusSelector) {
       var focusTarget = container.querySelector(focusSelector);
@@ -920,18 +975,10 @@
 
     container.querySelectorAll("[data-opt-id]").forEach(function (btn) {
       btn.addEventListener("click", function () {
-        if (session.isStudy) return;
+        if (session.isStudy || waitingForTest) return;
         if (session.mode === "practice" && session.answers[q.internalId]) return;
         var optId = btn.getAttribute("data-opt-id");
         session.answers[q.internalId] = optId;
-        if (session.mode === "practice" && q.correctOptionId && optId !== q.correctOptionId) {
-          State.recordMistake(q, optId, {
-            subjectId: q.subjectId || session.subjectId,
-            subjectName: session.subjectName,
-            collectionId: q.collectionId || session.collectionId,
-          });
-          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
-        }
         persistActiveSession();
         renderQuestionView(container, session, session.mode === "practice"
           ? (session.currentIndex < total - 1 ? "#nextQuestionBtn" : "#finishQuizBottomBtn")
@@ -993,7 +1040,18 @@
     }
 
     var finishHandler = function () {
+      if (waitingForTest) return;
       openFinishConfirmDialog(session, async function () {
+        if (access.finishing) return;
+        access.finishing = true;
+        try {
+          session.resultData = await submitAttemptToServer(session);
+        } catch (error) {
+          access.error = error.message;
+          access.finishing = false;
+          renderQuestionView(container, session, "#finishQuizTopBtn");
+          return;
+        }
         if (session.mode === "test") {
           (session.questions || []).forEach(function (item) {
             if (!item || !item.correctOptionId) return;
@@ -1011,7 +1069,6 @@
         if (session.mode === "test" && typeof State.revealBookmarksForCompletedTest === "function") {
           State.revealBookmarksForCompletedTest(session.questions, session.attemptId);
         }
-        session.resultData = await submitAttemptToServer(session);
         if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         if (!container.isConnected || !container.querySelector(".question-card") || activeSession !== session) return;
         renderResultsView(container, session);
@@ -1067,19 +1124,12 @@
         if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         renderQuestionView(host, activeSession);
       } else if (/^[1-4A-D]$/.test(key) && !activeSession.isStudy) {
+        if (activeSession.mode === "test" && !getReviewState(activeSession).ready) return;
         var idx = /^[1-4]$/.test(key) ? Number(key) - 1 : key.charCodeAt(0) - 65;
         var opt = q.options && q.options[idx];
         if (!opt) return;
         if (activeSession.mode === "practice" && activeSession.answers[q.internalId]) return;
         activeSession.answers[q.internalId] = opt.id;
-        if (activeSession.mode === "practice" && q.correctOptionId && opt.id !== q.correctOptionId) {
-          root.ElgoState.recordMistake(q, opt.id, {
-            subjectId: q.subjectId || activeSession.subjectId,
-            subjectName: activeSession.subjectName,
-            collectionId: q.collectionId || activeSession.collectionId,
-          });
-          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
-        }
         persistActiveSession();
         renderQuestionView(host, activeSession);
       }
@@ -1088,6 +1138,7 @@
 
   function launchSpec(spec) {
     activeSession = spec;
+    sanitizeTestSession(activeSession);
     persistActiveSession();
     bindGlobalShortcuts();
     if (root.ElgoRouter) {
@@ -1101,6 +1152,8 @@
       var st = root.ElgoState.getState();
       if (st.activeSession && Array.isArray(st.activeSession.questions) && st.activeSession.questions.length) {
         activeSession = st.activeSession;
+        sanitizeTestSession(activeSession);
+        persistActiveSession();
       }
     }
 
@@ -1123,6 +1176,7 @@
             isGradableCollection: true,
             title: meta ? root.ElgoState.getQuizTitle(meta) : reqSource,
           });
+          sanitizeTestSession(activeSession);
           persistActiveSession();
         }
       } catch (_err) {
@@ -1145,6 +1199,9 @@
   }
 
   function clearActiveSession() {
+    if (activeSession && activeSession.mode === "test" && !activeSession.completed && root.ElgoState.getAuth()) {
+      requestQuizFeedback({ action: "abandon", attemptId: activeSession.attemptId }).catch(function () {});
+    }
     activeSession = null;
     stopTimer();
   }
@@ -1154,6 +1211,10 @@
     render: render,
     stopTimer: stopTimer,
     clearActiveSession: clearActiveSession,
+    loadStudyFeedback: async function (questionId) {
+      var result = await requestQuizFeedback({ action: "study", questionId: questionId });
+      return result.feedback[questionId];
+    },
     getActiveSession: function () { return activeSession; },
   };
 })(typeof window !== "undefined" ? window : globalThis);

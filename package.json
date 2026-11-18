@@ -12,6 +12,7 @@
     "build": "node tools/build.js",
     "build:key": "node tools/build-answer-key.js",
     "check": "node tools/predeploy-check.js",
+    "pretest": "node tools/build-answer-key.js",
     "test": "node --test tests/*.test.js",
     "admin:password": "node tools/admin-password.js"
   },

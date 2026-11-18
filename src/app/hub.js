@@ -556,7 +556,6 @@
             if (typeof exporter.inlineQuizImages === "function") {
               qs = await exporter.inlineQuizImages(qs);
             }
-            var subjExp = await State.loadSubjectExplanations(subj.id).catch(function () { return {}; });
             var firstMeta = allSources.find(function (s) { return s.id === chosenIds[0]; });
             var quizTitle = chosenIds.length === 1 && firstMeta
               ? State.getQuizTitle(firstMeta, subj.id)
@@ -564,9 +563,10 @@
             var html = exporter.buildOfflineQuizHtml({
               courseTitle: State.getSubjectName(subj),
               quizTitle: quizTitle,
-              subtitle: qs.length + " questions · Self-contained offline interactive quiz & study key",
-              questions: qs,
-              explanationsMap: subjExp || {},
+              subtitle: quizText(qs.length + " questions · Feedback is available online", qs.length + " سؤال · الإجابات متاحة على الموقع"),
+              questions: qs.map(function (q) {
+                return { question: q.question || q.text, options: q.options, images: q.images, image: q.image, imageAlt: q.imageAlt, imageCaption: q.imageCaption };
+              }),
             });
             exporter.triggerHtmlDownload(subj.id + "-" + quizTitle, html);
             if (root.ElgoShell) root.ElgoShell.showToast(isAr ? "تم تحميل ملف الكويز أوفلاين." : "Offline quiz HTML downloaded.");

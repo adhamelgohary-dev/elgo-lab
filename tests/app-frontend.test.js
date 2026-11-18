@@ -217,7 +217,8 @@ test("dev-server serves unified SPA, lazy bundles, lecture pages, PDFs, and end-
     const expRes = await fetch(`${base}/data/explanations/demo-course.json`);
     assert.equal(expRes.status, 200);
     const expData = await expRes.json();
-    assert.ok(Object.keys(expData.byInternalId).length >= 10);
+    assert.deepEqual(expData.byInternalId, {});
+    assert.ok(quiz1.questions.every((q) => !Object.hasOwn(q, "correctOptionId")));
 
     const lecRes = await fetch(`${base}/learn/demo-course/lecture-1/`);
     assert.equal(lecRes.status, 200);
@@ -242,7 +243,8 @@ test("dev-server serves unified SPA, lazy bundles, lecture pages, PDFs, and end-
     assert.ok(regData.token);
 
     const answerMap = {};
-    quiz1.questions.forEach((q) => { answerMap[q.internalId] = q.correctOptionId; });
+    const grading = require("../backend/answer-key").collections["demo-course::quiz-1"].answers;
+    quiz1.questions.forEach((q) => { answerMap[q.internalId] = grading[q.internalId]; });
 
     const submitRes = await fetch(`${base}/api/quiz/submit`, {
       method: "POST",
@@ -697,7 +699,8 @@ test("self-hosted node-server persists SQLite + Disk files across restarts, supp
     const dyn = await dynRes.json();
     assert.ok(dyn.customSubjects["operating-systems"]);
     assert.equal(dyn.subjectQuizzes.length, 1);
-    assert.equal(dyn.subjectQuizzes[0].questions[0].explanationArabic, "طابور الاستعداد يحتفظ بالعمليات الجاهزة للتنفيذ.");
+    assert.equal(dyn.subjectQuizzes[0].questions[0].explanationArabic, undefined);
+    assert.equal(dyn.subjectQuizzes[0].questions[0].correctOptionId, undefined);
 
     const pdfFetchRes = await fetch(`${base}${upJson.pdf.url}`);
     assert.equal(pdfFetchRes.status, 200);
@@ -1003,7 +1006,7 @@ test("backend validates offlineDownloads settings, renews active guest sessions,
   // Guest can join leaderboard without setting any password
   const quizId = "quiz-2";
   const subjId = "demo-course";
-  const subj = JSON.parse(fs.readFileSync(path.join(ROOT, "public/data/subjects", `${subjId}.json`), "utf8"));
+  const subj = JSON.parse(fs.readFileSync(path.join(ROOT, "content/subjects", `${subjId}.json`), "utf8"));
   const qItem = subj.quizzes.find((q) => q.id === quizId);
   assert.ok(qItem && qItem.questions.length > 0);
   const answers = {};
@@ -1134,7 +1137,7 @@ test("POST /api/admin/quizzes/visibility toggles hidden quizzes reversibly witho
   const subjId = "demo-course";
   const quizId = "quiz-2";
   const compositeKey = `${subjId}::${quizId}`;
-  const subj = JSON.parse(fs.readFileSync(path.join(ROOT, "public/data/subjects", `${subjId}.json`), "utf8"));
+  const subj = JSON.parse(fs.readFileSync(path.join(ROOT, "content/subjects", `${subjId}.json`), "utf8"));
   const qItem = subj.quizzes.find((q) => q.id === quizId);
   const answers = {};
   qItem.questions.forEach((q) => { answers[q.id] = q.correctOptionId; });
@@ -1630,7 +1633,7 @@ test("build stamps hashed SW cache revision for instant deploy invalidation and 
     assert.match(s1.swRevision, /^[a-f0-9]{10}$/);
     assert.equal(s1.swRevision, s2.swRevision, "Deterministic build hash when inputs are identical");
     const builtSw = fs.readFileSync(path.join(tmp1, "sw.js"), "utf8");
-    assert.match(builtSw, new RegExp(`const CACHE_NAME = "elgo-lab-v11-${s1.swRevision}";`));
+    assert.match(builtSw, new RegExp(`const CACHE_NAME = "elgo-lab-v12-${s1.swRevision}";`));
     assert.match(builtSw, /cache:\s*"reload"/);
   } finally {
     fs.rmSync(tmp1, { recursive: true, force: true });

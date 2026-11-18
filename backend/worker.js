@@ -25,6 +25,12 @@
 "use strict";
 
 let answerKeyModule = null;
+let bundledExplanations = {};
+try {
+  bundledExplanations = require("./question-explanations.generated.js");
+} catch (_error) {
+  // Local tooling can load the worker before generating the release assets.
+}
 try {
   answerKeyModule = require("./answer-key.js");
 } catch (_e) {
@@ -2772,7 +2778,8 @@ async function deleteUserData(env, studentId) {
     env.DB.prepare("DELETE FROM student_progress WHERE student_id = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind(studentId),
     env.DB.prepare("DELETE FROM best_scores WHERE student_id = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind(studentId),
     env.DB.prepare("DELETE FROM quiz_attempts WHERE student_id = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind(studentId),
-    env.DB.prepare("DELETE FROM users WHERE student_id = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind(studentId)
+    env.DB.prepare("DELETE FROM users WHERE student_id = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind(studentId),
+    env.DB.prepare("DELETE FROM admin_config WHERE config_key = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind(quizGateKey({ studentId }))
   ]);
   const deletedUsers = Number(batchRes && batchRes[4] && batchRes[4].meta && batchRes[4].meta.changes) || 0;
   if (deletedUsers === 0 && (await isDbWriteFrozen(env))) {
@@ -3301,6 +3308,7 @@ async function route(request, env) {
   }
 
   // ---- Quiz ----------------------------------------------------------------
+  if (pathname === "/api/quiz/feedback" && method === "POST") return handleQuizFeedback(request, env);
   if (pathname === "/api/quiz/submit" && method === "POST") return handleQuizSubmit(request, env);
 
   // ---- Leaderboard ---------------------------------------------------------
@@ -4073,6 +4081,127 @@ async function handleProfileDelete(request, env, session) {
 // ---------------------------------------------------------------------------
 // Handlers — quiz & leaderboard
 // ---------------------------------------------------------------------------
+function quizGateKey(session) {
+  return "quiz_active_test:" + session.studentId;
+}
+
+function isQuizQuestionId(value) {
+  return typeof value === "string" && value.length <= 200 &&
+    /^[A-Za-z0-9_-]+::(?:quiz|sheet|lecture)::[A-Za-z0-9_-]+::[A-Za-z0-9_-]+$/.test(value);
+}
+
+function finishQuizGateStatement(env, session, gate, answers) {
+  const questionIds = gate.questionIds.filter((id) => typeof answers?.[id] === "string" && /^[A-Za-z0-9]{1,4}$/.test(answers[id]));
+  const finished = { ...gate, finished: true, questionIds };
+  return env.DB.prepare("UPDATE admin_config SET config_json = ?3, updated_at = datetime('now') WHERE config_key = ?1 AND config_json = ?2 AND " + SQL_WRITE_FENCE_PREDICATE)
+    .bind(quizGateKey(session), JSON.stringify(gate), JSON.stringify(finished));
+}
+
+async function readQuizGate(env, session) {
+  const row = await env.DB.prepare("SELECT config_json FROM admin_config WHERE config_key = ?1").bind(quizGateKey(session)).first();
+  const gate = row ? JSON.parse(row.config_json) : null;
+  return gate && gate.expiresAt > Date.now() ? gate : null;
+}
+
+async function readQuestionFeedback(env, questionIds) {
+  const deletedSubjects = new Set(await readConfigJson(env, "deleted_subjects", []));
+  const blocked = new Set([
+    ...await readConfigJson(env, "deleted_quizzes", []),
+    ...await readConfigJson(env, "hidden_quizzes", []),
+  ]);
+  const collections = new Map();
+  const feedback = Object.create(null);
+  for (const id of questionIds) {
+    const [subject, kind, quiz] = id.split("::");
+    const key = subject + "::" + quiz;
+    if (deletedSubjects.has(subject) || blocked.has(key)) continue;
+    if (!collections.has(key)) {
+      const custom = await readConfigJson(env, "custom_quiz_key:" + key, null);
+      const customQuiz = custom && await readConfigJson(env, "custom_quiz:" + key, null);
+      collections.set(key, { key: custom || getCollection(subject, quiz), quiz: customQuiz });
+    }
+    const entry = collections.get(key);
+    if (!entry.key) continue;
+    const answer = Object.hasOwn(entry.key.answers || {}, id) ? entry.key.answers[id] : null;
+    if (!answer && !(entry.key.ungradableIds || []).includes(id)) continue;
+    const question = entry.quiz && entry.quiz.kind === kind &&
+      (entry.quiz.questions || []).find((item) => item.internalId === id);
+    const details = { correctOptionId: answer };
+    const source = entry.quiz ? question : bundledExplanations[id];
+    if (source) {
+      for (const field of ["explanation", "explanationArabic", "arabicTranslation", "academicExplanation", "correctReasoning", "wrongAnswerClarification", "memoryTrick", "rule", "whyYouMightErr", "teachingReview"]) {
+        if (typeof source[field] === "string" && source[field]) details[field] = source[field];
+      }
+    }
+    feedback[id] = details;
+  }
+  return feedback;
+}
+
+async function handleQuizFeedback(request, env) {
+  const session = await getUserSession(request, env);
+  if (!session) return fail(401, "Sign in to use online quiz feedback.", "AUTH_REQUIRED");
+  const parsed = await readJson(request);
+  if (parsed.tooLarge) return fail(413, "Request too large.", "TOO_LARGE");
+  const body = parsed.body;
+  const gate = await readQuizGate(env, session);
+  const activeTest = gate && !gate.finished;
+  const attemptId = safeId(body.attemptId, 80);
+  if (body.action === "abandon") {
+    if (activeTest && gate.attemptId === attemptId) {
+      await env.DB.prepare("DELETE FROM admin_config WHERE config_key = ?1 AND config_json = ?2 AND " + SQL_WRITE_FENCE_PREDICATE)
+        .bind(quizGateKey(session), JSON.stringify(gate)).run();
+    }
+    return jsonResponse({ ok: true });
+  }
+  if (body.action === "start") {
+    if (attemptId.length < 8) return fail(400, "An attempt identifier is required.", "BAD_REQUEST");
+    if (!Array.isArray(body.questionIds) || !body.questionIds.length ||
+        body.questionIds.length > MAX_ANSWERS_PER_SUBMISSION || !body.questionIds.every(isQuizQuestionId)) {
+      return fail(400, "A valid list of Test questions is required.", "BAD_REQUEST");
+    }
+    if (activeTest && gate.attemptId === attemptId) return jsonResponse({ ok: true });
+    if (activeTest) return fail(409, "Finish or discard your active Test first.", "TEST_ACTIVE");
+    const frozen = await requireProgressWriteFenceClear(env);
+    if (frozen) return frozen;
+    const next = { attemptId, expiresAt: Date.now() + 4 * 3600 * 1000, finished: false, questionIds: [...new Set(body.questionIds)] };
+    const saved = await env.DB.prepare(
+      "INSERT INTO admin_config(config_key,config_json,updated_at) SELECT ?1,?2,datetime('now') WHERE " + SQL_WRITE_FENCE_PREDICATE +
+      " ON CONFLICT(config_key) DO UPDATE SET config_json=excluded.config_json,updated_at=excluded.updated_at " +
+      "WHERE json_extract(admin_config.config_json,'$.finished') = 1 OR json_extract(admin_config.config_json,'$.expiresAt') <= ?3"
+    ).bind(quizGateKey(session), JSON.stringify(next), Date.now()).run();
+    return saved.meta.changes ? jsonResponse({ ok: true }) : fail(409, "Could not open Test. Retry or resume your current Test.", "TEST_ACTIVE");
+  }
+  if (body.action === "finish-unranked") {
+    if (gate && gate.finished && gate.attemptId === attemptId) return jsonResponse({ ok: true });
+    if (!activeTest || gate.attemptId !== attemptId) return fail(403, "Open the Test before finishing it.", "TEST_FEEDBACK_LOCKED");
+    const frozen = await requireProgressWriteFenceClear(env);
+    if (frozen) return frozen;
+    const saved = await finishQuizGateStatement(env, session, gate, body.answers).run();
+    return saved.meta.changes ? jsonResponse({ ok: true }) : fail(409, "The Test changed. Try again.", "SUBMISSION_CONFLICT");
+  }
+  if (body.action === "review") {
+    if (activeTest || !gate || gate.attemptId !== attemptId) {
+      return fail(403, "Submit your Test before opening feedback.", "TEST_FEEDBACK_LOCKED");
+    }
+    return jsonResponse({ ok: true, feedback: await readQuestionFeedback(env, gate.questionIds || []) });
+  }
+  if (activeTest) return fail(403, "Finish your active Test before opening study feedback.", "TEST_FEEDBACK_LOCKED");
+  if (body.action !== "study" && body.action !== "practice") {
+    return fail(400, "Unknown quiz feedback action.", "BAD_REQUEST");
+  }
+  if (body.action === "practice" && !/^[A-Za-z0-9]{1,4}$/.test(String(body.selectedOptionId || ""))) {
+    return fail(400, "Select an answer before opening practice feedback.", "ANSWER_REQUIRED");
+  }
+  const questionId = String(body.questionId || "");
+  if (!isQuizQuestionId(questionId)) {
+    return fail(400, "Invalid question.", "BAD_REQUEST");
+  }
+  const feedback = await readQuestionFeedback(env, [questionId]);
+  if (!Object.hasOwn(feedback, questionId)) return fail(404, "Question not available.", "UNKNOWN_QUESTION");
+  return jsonResponse({ ok: true, feedback });
+}
+
 async function handleQuizSubmit(request, env) {
   const session = await getUserSession(request, env);
   if (!session) return fail(401, "Log in to submit a ranked quiz.", "AUTH_REQUIRED");
@@ -4084,6 +4213,13 @@ async function handleQuizSubmit(request, env) {
 
   const attemptId = safeId(body.attemptId, 80);
   if (attemptId.length < 8) return fail(400, "A unique attemptId is required.", "BAD_REQUEST");
+  const quizGate = await readQuizGate(env, session);
+  if (quizGate && !quizGate.finished && (quizGate.attemptId !== attemptId || body.mode !== "test")) {
+    return fail(403, "Complete the active Test before submitting another attempt.", "TEST_ACTIVE");
+  }
+  if (quizGate && !quizGate.finished && Object.keys(body.answers || {}).some((id) => !quizGate.questionIds.includes(id))) {
+    return fail(400, "Submitted answers must belong to the active Test.", "UNKNOWN_QUESTION");
+  }
 
   const reqSubjectId = safeId(body.subjectId, 120);
   const reqQuizId = safeId(body.quizId, 120);
@@ -4152,6 +4288,7 @@ async function handleQuizSubmit(request, env) {
       ).bind(session.studentId, graded.subjectId, graded.quizId, session.username, quizTitle, graded.score, graded.total, graded.percentage, durationMs, attemptHash)
     );
   }
+  if (quizGate && !quizGate.finished) statements.push(finishQuizGateStatement(env, session, quizGate, body.answers));
   try {
     const batchRes = await env.DB.batch(statements);
     const attemptInserted = Number(batchRes && batchRes[0] && batchRes[0].meta && batchRes[0].meta.changes) || 0;
@@ -4874,7 +5011,30 @@ async function handleDynamicCatalogGet(_request, env, url) {
       const meta = customQuizzes[i];
       if (meta.subjectId === reqSubjectId) {
         const fullQuiz = await readConfigJson(env, "custom_quiz:" + reqSubjectId + "::" + meta.quizId, null);
-        if (fullQuiz) subjectQuizzes.push(fullQuiz);
+        const composite = reqSubjectId + "::" + meta.quizId;
+        if (fullQuiz && !(Array.isArray(deletedSubjectIds) && deletedSubjectIds.includes(reqSubjectId)) &&
+            !(Array.isArray(deletedQuizKeys) && deletedQuizKeys.includes(composite))) {
+          subjectQuizzes.push({
+            id: fullQuiz.id,
+            subjectId: fullQuiz.subjectId,
+            kind: fullQuiz.kind,
+            title: fullQuiz.title,
+            updatedAt: fullQuiz.updatedAt,
+            questions: (fullQuiz.questions || []).map((q) => ({
+              id: q.id,
+              internalId: q.internalId,
+              number: q.number,
+              isGradable: Boolean(q.correctOptionId),
+              question: q.question,
+              text: q.text,
+              options: (q.options || []).map(({ id, text, image }) => ({ id, text, image })),
+              image: q.image,
+              imageAlt: q.imageAlt,
+              imageCaption: q.imageCaption,
+              images: Array.isArray(q.images) ? q.images.map(({ url, alt, caption }) => ({ url, alt, caption })) : undefined,
+            })),
+          });
+        }
       }
     }
     subjectQuestionImages = {};
