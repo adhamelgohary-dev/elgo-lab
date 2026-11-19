@@ -197,9 +197,212 @@
     return data;
   }
 
+  function safeFocusNoScroll(el) {
+    if (!el || typeof el.focus !== "function") return;
+    try {
+      el.focus({ preventScroll: true });
+    } catch (_err) {
+      el.focus();
+    }
+  }
+
+  function scheduleDeferred(fn) {
+    if (typeof setTimeout === "function") setTimeout(fn, 0);
+    else fn();
+  }
+
   function getReviewState(session) {
     if (!reviewState.has(session)) reviewState.set(session, { questions: new Map(), ready: false, error: "" });
     return reviewState.get(session);
+  }
+
+  function buildOptionState(session, q, opt, chosenId, reviewEntry, hasKey) {
+    var selected = chosenId === opt.id;
+    var isPending = Boolean(reviewEntry && reviewEntry.pending);
+    var isError = Boolean(reviewEntry && reviewEntry.error);
+    var isAnswered = Boolean(chosenId);
+    var revealAnswer = session.isStudy || (session.mode === "practice" && isAnswered && !isPending && !isError);
+    var isRightOpt = hasKey && opt.id === q.correctOptionId;
+    var cls = "option-btn";
+    var statusLabel = "";
+
+    if (revealAnswer) {
+      if (isRightOpt) {
+        cls += " is-correct";
+        statusLabel = txt("✓ Correct", "✓ صح");
+      } else if (selected && hasKey && !isRightOpt) {
+        cls += " is-wrong";
+        statusLabel = txt("✗ Wrong", "✗ خطأ");
+      } else if (selected) {
+        cls += " is-selected";
+        statusLabel = txt("Selected", "مختارة");
+      }
+    } else if (selected) {
+      cls += " is-selected";
+      if (session.mode === "practice" && isPending) {
+        cls += " is-checking";
+        statusLabel = txt("Checking…", "جاري التحقق…");
+      } else {
+        statusLabel = txt("Selected", "مختارة");
+      }
+    }
+    return { cls: cls, statusLabel: statusLabel, selected: selected };
+  }
+
+  function buildFeedbackSlotHtml(session, q, chosenId, reviewEntry, accessError) {
+    var State = root.ElgoState;
+    var isPending = Boolean(reviewEntry && reviewEntry.pending);
+    var isError = Boolean(reviewEntry && reviewEntry.error);
+    var isAnswered = Boolean(chosenId);
+
+    if (session.mode === "test") {
+      if (accessError) {
+        return '<div class="feedback-card" role="status"><p style="margin:0;">' + esc(accessError) + ' <button type="button" class="quiet" id="retryQuizFeedbackBtn">' + esc(txt("Retry", "حاول مرة أخرى")) + '</button></p></div>';
+      }
+      return "";
+    }
+
+    if (!session.isStudy && !isAnswered) return "";
+
+    if (isPending) {
+      return [
+        '<div class="feedback-card is-checking" id="qFeedbackBox" role="status" aria-live="polite">',
+        '  <div class="feedback-headline feedback-checking-row"><span class="feedback-dot" aria-hidden="true"></span>' + esc(txt("Checking answer…", "جاري التحقق من الإجابة…")) + '</div>',
+        '</div>'
+      ].join("\n");
+    }
+
+    if (isError || accessError) {
+      var errMsg = (reviewEntry && reviewEntry.error) || accessError || txt("Could not load feedback.", "تعذر تحميل الشرح.");
+      return [
+        '<div class="feedback-card" id="qFeedbackBox" role="status">',
+        '  <div class="feedback-headline">' + esc(errMsg) + '</div>',
+        '  <div><button type="button" class="secondary" id="retryQuizFeedbackBtn">' + esc(txt("Retry", "حاول مرة أخرى")) + '</button></div>',
+        '</div>'
+      ].join("\n");
+    }
+
+    var hasKey = Boolean(q.correctOptionId);
+    var exp = presentExplanation(q, chosenId, q.subjectId || session.subjectId);
+    var boxCls = session.isStudy || !hasKey ? "" : chosenId === q.correctOptionId ? "is-correct" : "is-wrong";
+    var headline = !hasKey
+      ? esc(State.t("unkeyedNotice"))
+      : session.isStudy
+        ? (esc(State.t("studyCheckAnswer")) + ": " + esc(q.correctOptionId))
+        : chosenId === q.correctOptionId
+          ? ("✓ " + esc(State.t("correct")))
+          : ("✗ " + esc(State.t("incorrect")) + " — " + esc(State.t("correctAnswerIs")) + " " + esc(q.correctOptionId));
+
+    return [
+      '<div class="feedback-card ' + boxCls + '" id="qFeedbackBox" aria-live="polite">',
+      '  <div class="feedback-headline">' + headline + '</div>',
+         exp.en ? ('<div>' + formatSafeRichText(exp.en) + '</div>') : '',
+         exp.rule ? ('<div class="feedback-rule"><strong>' + esc(State.t("keyRuleLabel")) + ':</strong> ' + formatSafeRichText(exp.rule) + '</div>') : '',
+         exp.trick ? ('<div class="feedback-rule"><strong>' + esc(State.t("memoryTrickLabel")) + ':</strong> ' + formatSafeRichText(exp.trick) + '</div>') : '',
+         exp.mistake ? [
+           '<details class="player-more-detail">',
+           '  <summary style="cursor:pointer;font-size:0.86rem;font-weight:700;color:var(--accent-text);">' + esc(State.t("whyMisleadLabel")) + '</summary>',
+           '  <div style="margin-top:6px;font-size:0.86rem;color:var(--muted);">' + formatSafeRichText(exp.mistake) + '</div>',
+           '</details>'
+         ].join("\n") : '',
+         exp.ar ? ('<div class="feedback-explanation-ar" dir="rtl" lang="ar">' + formatSafeRichText(exp.ar) + '</div>') : '',
+      '</div>'
+    ].join("\n");
+  }
+
+  function bindFeedbackSlotHandlers(container, session, q) {
+    var State = root.ElgoState;
+    var access = getReviewState(session);
+    var retryFeedback = container.querySelector("#retryQuizFeedbackBtn");
+    if (retryFeedback) {
+      retryFeedback.addEventListener("click", function () {
+        if (!State.getAuth() && root.ElgoShell && root.ElgoShell.openAuthModal) {
+          root.ElgoShell.openAuthModal("login");
+          return;
+        }
+        access.pending = false;
+        access.error = "";
+        access.questions.delete(q.internalId);
+        var chosenId = session.answers[q.internalId] || null;
+        loadFeedback(container, session, q, chosenId);
+        patchQuestionFeedbackInPlace(container, session, q);
+      });
+    }
+  }
+
+  function patchQuestionFeedbackInPlace(container, session, q) {
+    if (!container || !container.isConnected || activeSession !== session || session.completed) return;
+    var currentQ = session.questions[session.currentIndex];
+    if (!currentQ || currentQ.internalId !== q.internalId) return;
+
+    var access = getReviewState(session);
+    var review = access.questions.get(q.internalId);
+    var accessError = session.mode === "test" ? access.error : review && review.error;
+    var waitingForTest = session.mode === "test" && !access.ready;
+    var enrichedQ = questionWithFeedback(session, q);
+    var chosenId = session.answers[q.internalId] || null;
+    var isAnswered = Boolean(chosenId);
+    var hasKey = Boolean(enrichedQ.correctOptionId);
+    var lockBtn = session.isStudy || waitingForTest || (session.mode === "practice" && isAnswered);
+
+    container.querySelectorAll("#qOptionsList [data-opt-id]").forEach(function (btn) {
+      var optId = btn.getAttribute("data-opt-id");
+      var optObj = (enrichedQ.options || []).find(function (o) { return o.id === optId; }) || { id: optId };
+      var st = buildOptionState(session, enrichedQ, optObj, chosenId, review, hasKey);
+      btn.className = st.cls;
+      btn.setAttribute("aria-pressed", st.selected ? "true" : "false");
+      btn.disabled = Boolean(lockBtn);
+      var statusEl = btn.querySelector(".option-status");
+      if (st.statusLabel) {
+        if (!statusEl) {
+          statusEl = document.createElement("span");
+          statusEl.className = "option-status";
+          btn.appendChild(statusEl);
+        }
+        statusEl.textContent = st.statusLabel;
+      } else if (statusEl) {
+        statusEl.remove();
+      }
+    });
+
+    var finishTop = container.querySelector("#finishQuizTopBtn");
+    if (finishTop) finishTop.disabled = Boolean(waitingForTest);
+    var finishBottom = container.querySelector("#finishQuizBottomBtn");
+    if (finishBottom) finishBottom.disabled = Boolean(waitingForTest);
+
+    var total = session.questions.length;
+    var answeredCount = Object.keys(session.answers).length;
+    var progress = session.isStudy ? session.currentIndex + 1 : answeredCount;
+    var pctDone = total > 0 ? Math.round((progress / total) * 100) : 0;
+    var progBar = container.querySelector(".player-progress-bar");
+    if (progBar) progBar.setAttribute("aria-valuenow", String(progress));
+    var progFill = container.querySelector(".player-progress-fill");
+    if (progFill) progFill.style.width = pctDone + "%";
+    var mapBtn = container.querySelector("#toggleMapBtn");
+    if (mapBtn) mapBtn.textContent = txt("Map", "الخريطة") + " (" + answeredCount + "/" + total + ")";
+    var counterEl = container.querySelector(".question-counter");
+    if (counterEl && !session.isStudy) {
+      var State = root.ElgoState;
+      counterEl.textContent = State.t("questionLabel") + " " + (session.currentIndex + 1) + " " + State.t("ofLabel") + " " + total + " · " + State.t("answeredLabel") + " " + answeredCount + "/" + total;
+    }
+
+    var dot = container.querySelector('[data-jump-idx="' + session.currentIndex + '"]');
+    if (dot) {
+      var dCls = "nav-dot is-current";
+      if (session.mode === "practice" && chosenId && hasKey) {
+        dCls += chosenId === enrichedQ.correctOptionId ? " is-correct" : " is-wrong";
+      } else if (chosenId) {
+        dCls += " is-answered";
+      }
+      if (session.flags[q.internalId]) dCls += " is-flagged";
+      dot.className = dCls;
+    }
+
+    var slot = container.querySelector("#qFeedbackSlot");
+    if (slot) {
+      slot.innerHTML = buildFeedbackSlotHtml(session, enrichedQ, chosenId, review, accessError);
+      bindFeedbackSlotHandlers(container, session, enrichedQ);
+    }
   }
 
   function loadFeedback(container, session, question, chosenId) {
@@ -211,35 +414,42 @@
     var request = isTest
       ? { action: "start", attemptId: session.attemptId, questionIds: session.questions.map(function (q) { return q.internalId; }) }
       : { action: session.mode, questionId: question.internalId, selectedOptionId: chosenId };
-    var redraw = function () {
+    var updateView = function () {
       if (activeSession === session && !session.completed && container.isConnected &&
           session.questions[session.currentIndex].internalId === question.internalId) {
-        var focused = document.activeElement;
-        var selector = focused && focused.id && container.contains(focused) ? "#" + CSS.escape(focused.id) : null;
-        renderQuestionView(container, session, selector);
+        patchQuestionFeedbackInPlace(container, session, question);
       }
     };
     var pending = requestQuizFeedback(request).then(function (data) {
       if (activeSession !== session || session.completed) return;
       if (isTest) {
         state.ready = true;
+        state.pending = false;
       } else {
         var details = data.feedback[question.internalId];
         state.questions.set(question.internalId, details);
-        if (!session.isStudy && details.correctOptionId && chosenId !== details.correctOptionId) {
-          root.ElgoState.recordMistake(Object.assign({}, question, details), chosenId, {
-            subjectId: question.subjectId || session.subjectId,
-            subjectName: session.subjectName,
-            collectionId: question.collectionId || session.collectionId,
+        updateView();
+        if (!session.isStudy && details && details.correctOptionId && chosenId !== details.correctOptionId) {
+          scheduleDeferred(function () {
+            root.ElgoState.recordMistake(Object.assign({}, question, details), chosenId, {
+              subjectId: question.subjectId || session.subjectId,
+              subjectName: session.subjectName,
+              collectionId: question.collectionId || session.collectionId,
+            });
+            if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
           });
-          if (root.ElgoShell) root.ElgoShell.renderHeaderAndNav();
         }
+        return;
       }
-      redraw();
+      updateView();
     }).catch(function (error) {
-      if (isTest) state.error = error.message;
-      else state.questions.set(question.internalId, { error: error.message });
-      redraw();
+      if (isTest) {
+        state.pending = false;
+        state.error = error.message;
+      } else {
+        state.questions.set(question.internalId, { error: error.message });
+      }
+      updateView();
     });
     if (!isTest) state.questions.set(question.internalId, { pending: pending });
   }
@@ -787,72 +997,26 @@
     var pctDone = total > 0 ? Math.round((progress / total) * 100) : 0;
 
     var optionsHtml = (q.options || []).map(function (opt) {
-      var selected = chosenId === opt.id;
-      var isRightOpt = hasKey && opt.id === q.correctOptionId;
-      var cls = "option-btn";
-      var statusLabel = "";
-
-      if (revealAnswer) {
-        if (isRightOpt) {
-          cls += " is-correct";
-          statusLabel = txt("✓ Correct", "✓ صح");
-        } else if (selected && hasKey && !isRightOpt) {
-          cls += " is-wrong";
-          statusLabel = txt("✗ Wrong", "✗ خطأ");
-        } else if (selected) {
-          cls += " is-selected";
-          statusLabel = txt("Recorded", "مسجلة");
-        }
-      } else if (selected) {
-        cls += " is-selected";
-        statusLabel = txt("Selected", "مختارة");
-      }
-
+      var st = buildOptionState(session, q, opt, chosenId, review, hasKey);
       var lockBtn = session.isStudy || waitingForTest || (session.mode === "practice" && isAnswered);
       return [
-        '<button type="button" class="' + cls + '" data-opt-id="' + esc(opt.id) + '" aria-pressed="' + (selected ? 'true' : 'false') + '"' + (lockBtn ? " disabled" : "") + '>',
+        '<button type="button" class="' + st.cls + '" data-opt-id="' + esc(opt.id) + '" aria-pressed="' + (st.selected ? 'true' : 'false') + '"' + (lockBtn ? " disabled" : "") + '>',
         '  <span class="option-letter">' + esc(opt.id) + '</span>',
         '  <span class="option-text">' + formatStem(opt.text) + '</span>',
-           statusLabel ? '<span class="option-status">' + esc(statusLabel) + '</span>' : '',
+           st.statusLabel ? '<span class="option-status">' + esc(st.statusLabel) + '</span>' : '',
         '</button>'
       ].join("\n");
     }).join("\n");
 
-    var feedbackHtml = "";
-    if (revealAnswer) {
-      var exp = presentExplanation(q, chosenId, q.subjectId || session.subjectId);
-      var boxCls = session.isStudy || !hasKey ? "" : chosenId === q.correctOptionId ? "is-correct" : "is-wrong";
-      var headline = !hasKey
-        ? esc(State.t("unkeyedNotice"))
-        : session.isStudy
-          ? (esc(State.t("studyCheckAnswer")) + ": " + esc(q.correctOptionId))
-          : chosenId === q.correctOptionId
-            ? ("✓ " + esc(State.t("correct")))
-            : ("✗ " + esc(State.t("incorrect")) + " — " + esc(State.t("correctAnswerIs")) + " " + esc(q.correctOptionId));
-
-      feedbackHtml = [
-        '<div class="feedback-card ' + boxCls + '" id="qFeedbackBox">',
-        '  <div class="feedback-headline">' + headline + '</div>',
-           exp.en ? ('<div>' + formatSafeRichText(exp.en) + '</div>') : '',
-           exp.rule ? ('<div class="feedback-rule"><strong>' + esc(State.t("keyRuleLabel")) + ':</strong> ' + formatSafeRichText(exp.rule) + '</div>') : '',
-           exp.trick ? ('<div class="feedback-rule"><strong>' + esc(State.t("memoryTrickLabel")) + ':</strong> ' + formatSafeRichText(exp.trick) + '</div>') : '',
-           exp.mistake ? [
-             '<details class="player-more-detail">',
-             '  <summary style="cursor:pointer;font-size:0.86rem;font-weight:700;color:var(--accent-text);">' + esc(State.t("whyMisleadLabel")) + '</summary>',
-             '  <div style="margin-top:6px;font-size:0.86rem;color:var(--muted);">' + formatSafeRichText(exp.mistake) + '</div>',
-             '</details>'
-           ].join("\n") : '',
-           exp.ar ? ('<div class="feedback-explanation-ar" dir="rtl" lang="ar">' + formatSafeRichText(exp.ar) + '</div>') : '',
-        '</div>'
-      ].join("\n");
-    }
+    var feedbackSlotHtml = buildFeedbackSlotHtml(session, q, chosenId, review, accessError);
 
     var dotsHtml = session.questions.map(function (item, idx) {
       var ans = session.answers[item.internalId];
+      var enrichedItem = questionWithFeedback(session, item);
       var cls = "nav-dot";
       if (idx === session.currentIndex) cls += " is-current";
-      if (session.mode === "practice" && ans && item.correctOptionId) {
-        cls += ans === item.correctOptionId ? " is-correct" : " is-wrong";
+      if (session.mode === "practice" && ans && enrichedItem.correctOptionId) {
+        cls += ans === enrichedItem.correctOptionId ? " is-correct" : " is-wrong";
       } else if (ans) {
         cls += " is-answered";
       }
@@ -882,28 +1046,29 @@
       '    <div class="player-progress-fill" style="width:' + pctDone + '%"></div>',
       '  </div>',
       '  <div class="player-layout">',
-      '    <section class="question-card" aria-label="Active Question">',
-      '      <div class="question-head">',
-      '        <span class="question-counter">' + esc(State.t("questionLabel")) + ' ' + (session.currentIndex + 1) + ' ' + esc(State.t("ofLabel")) + ' ' + total + (session.isStudy ? '' : ' · ' + esc(State.t("answeredLabel")) + ' ' + answeredCount + '/' + total) + '</span>',
-      '        <div class="question-actions-inline">',
-      '          <button type="button" class="q-tool-btn" id="flagQuestionBtn" aria-pressed="' + (flagged ? "true" : "false") + '">⚑ ' + esc(flagged ? State.t("flaggedLabel") : State.t("flagQuestion")) + '</button>',
-      '          <button type="button" class="q-tool-btn" id="bookmarkQuestionBtn" aria-pressed="' + (bookmarked ? "true" : "false") + '">🔖 ' + esc(bookmarked ? State.t("savedLabel") : State.t("bookmarkQuestion")) + '</button>',
-      '          <button type="button" class="q-tool-btn" id="reportQuestionBtn">⚠ ' + esc(State.t("reportIssue")) + '</button>',
+      '    <div class="player-main-col">',
+      '      <section class="question-card" aria-label="Active Question">',
+      '        <div class="question-head">',
+      '          <span class="question-counter">' + esc(State.t("questionLabel")) + ' ' + (session.currentIndex + 1) + ' ' + esc(State.t("ofLabel")) + ' ' + total + (session.isStudy ? '' : ' · ' + esc(State.t("answeredLabel")) + ' ' + answeredCount + '/' + total) + '</span>',
+      '          <div class="question-actions-inline">',
+      '            <button type="button" class="q-tool-btn" id="flagQuestionBtn" aria-pressed="' + (flagged ? "true" : "false") + '">⚑ ' + esc(flagged ? State.t("flaggedLabel") : State.t("flagQuestion")) + '</button>',
+      '            <button type="button" class="q-tool-btn" id="bookmarkQuestionBtn" aria-pressed="' + (bookmarked ? "true" : "false") + '">🔖 ' + esc(bookmarked ? State.t("savedLabel") : State.t("bookmarkQuestion")) + '</button>',
+      '            <button type="button" class="q-tool-btn" id="reportQuestionBtn">⚠ ' + esc(State.t("reportIssue")) + '</button>',
+      '          </div>',
       '        </div>',
-      '      </div>',
-      '      <h2 class="question-stem" id="activeQuestionHeading" tabindex="-1">' + formatStem(q.question || q.text) + '</h2>',
-      accessError ? '<p role="status">' + esc(accessError) + ' <button type="button" class="quiet" id="retryQuizFeedbackBtn">' + esc(txt("Retry", "حاول مرة أخرى")) + '</button></p>' : '',
-             renderQuestionImagesHtml(q),
-      '      <div class="options-stack" id="qOptionsList">' + optionsHtml + '</div>',
-             feedbackHtml,
-      '      <div class="player-footer-nav">',
-      '        <button type="button" class="secondary" id="prevQuestionBtn"' + (session.currentIndex === 0 ? " disabled" : "") + '>' + esc(State.t("prevQuestion")) + '</button>',
-      '        <span class="player-shortcut-hint" style="font-size:0.76rem;color:var(--muted);">' + esc(txt("Shortcuts: A–D answer · ←/→ navigate · F flag · B save", "اختصارات: A–D إجابة · ←/→ تنقل · F تمييز · B حفظ")) + '</span>',
-               session.currentIndex < total - 1
-                 ? '<button type="button" class="primary" id="nextQuestionBtn">' + esc(State.t("nextQuestion")) + '</button>'
-                 : '<button type="button" class="primary" id="finishQuizBottomBtn"' + (waitingForTest ? ' disabled' : '') + '>' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
-      '      </div>',
-      '    </section>',
+      '        <h2 class="question-stem" id="activeQuestionHeading" tabindex="-1">' + formatStem(q.question || q.text) + '</h2>',
+               renderQuestionImagesHtml(q),
+      '        <div class="options-stack" id="qOptionsList">' + optionsHtml + '</div>',
+      '        <div class="player-footer-nav">',
+      '          <button type="button" class="secondary" id="prevQuestionBtn"' + (session.currentIndex === 0 ? " disabled" : "") + '>' + esc(State.t("prevQuestion")) + '</button>',
+      '          <span class="player-shortcut-hint" style="font-size:0.76rem;color:var(--muted);">' + esc(txt("Shortcuts: A–D answer · ←/→ navigate · F flag · B save", "اختصارات: A–D إجابة · ←/→ تنقل · F تمييز · B حفظ")) + '</span>',
+                 session.currentIndex < total - 1
+                   ? '<button type="button" class="primary" id="nextQuestionBtn">' + esc(State.t("nextQuestion")) + '</button>'
+                   : '<button type="button" class="primary" id="finishQuizBottomBtn"' + (waitingForTest ? ' disabled' : '') + '>' + esc(session.isStudy ? State.t("finishStudy") : State.t("submitExam")) + '</button>',
+      '        </div>',
+      '      </section>',
+      '      <div class="feedback-slot" id="qFeedbackSlot">' + feedbackSlotHtml + '</div>',
+      '    </div>',
       '    <aside class="player-nav-panel' + mobileNavOpenCls + '" id="playerNavPanel" aria-label="Question navigator">',
       '      <div class="dialog-head">',
       '        <strong>' + esc(txt("Questions", "الأسئلة")) + ' (' + total + ')</strong>',
@@ -919,21 +1084,11 @@
       '</div>'
     ].join("\n");
 
-    var retryFeedback = container.querySelector("#retryQuizFeedbackBtn");
-    if (retryFeedback) retryFeedback.addEventListener("click", function () {
-      if (!State.getAuth() && root.ElgoShell && root.ElgoShell.openAuthModal) {
-        root.ElgoShell.openAuthModal("login");
-        return;
-      }
-      access.pending = false;
-      access.error = "";
-      access.questions.delete(q.internalId);
-      renderQuestionView(container, session, "#activeQuestionHeading");
-    });
+    bindFeedbackSlotHandlers(container, session, q);
 
     if (focusSelector) {
       var focusTarget = container.querySelector(focusSelector);
-      if (focusTarget) focusTarget.focus();
+      safeFocusNoScroll(focusTarget);
     }
 
     stopTimer();
@@ -973,16 +1128,26 @@
       });
     }
 
+    function handleSelectOption(optId, clickedBtn) {
+      if (session.isStudy || (session.mode === "test" && !getReviewState(session).ready)) return;
+      if (session.mode === "practice" && session.answers[q.internalId]) return;
+      session.answers[q.internalId] = optId;
+      if (session.mode === "practice") {
+        loadFeedback(container, session, q, optId);
+      }
+      patchQuestionFeedbackInPlace(container, session, q);
+      if (session.mode === "test") {
+        var targetBtn = clickedBtn || container.querySelector('[data-opt-id="' + CSS.escape(optId) + '"]');
+        safeFocusNoScroll(targetBtn);
+      }
+      scheduleDeferred(function () {
+        persistActiveSession();
+      });
+    }
+
     container.querySelectorAll("[data-opt-id]").forEach(function (btn) {
       btn.addEventListener("click", function () {
-        if (session.isStudy || waitingForTest) return;
-        if (session.mode === "practice" && session.answers[q.internalId]) return;
-        var optId = btn.getAttribute("data-opt-id");
-        session.answers[q.internalId] = optId;
-        persistActiveSession();
-        renderQuestionView(container, session, session.mode === "practice"
-          ? (session.currentIndex < total - 1 ? "#nextQuestionBtn" : "#finishQuizBottomBtn")
-          : '[data-opt-id="' + CSS.escape(optId) + '"]');
+        handleSelectOption(btn.getAttribute("data-opt-id"), btn);
       });
     });
 
@@ -1130,8 +1295,11 @@
         if (!opt) return;
         if (activeSession.mode === "practice" && activeSession.answers[q.internalId]) return;
         activeSession.answers[q.internalId] = opt.id;
-        persistActiveSession();
-        renderQuestionView(host, activeSession);
+        if (activeSession.mode === "practice") {
+          loadFeedback(host, activeSession, q, opt.id);
+        }
+        patchQuestionFeedbackInPlace(host, activeSession, q);
+        scheduleDeferred(function () { persistActiveSession(); });
       }
     });
   }

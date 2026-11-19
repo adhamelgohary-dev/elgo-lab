@@ -3436,6 +3436,9 @@ async function route(request, env) {
   if (pathname === "/api/admin/subjects" && method === "DELETE") return handleAdminSubjectDelete(request, env, url);
   if (pathname === "/api/admin/quizzes" && method === "POST") return handleAdminQuizSave(request, env);
   if (pathname === "/api/admin/quizzes" && method === "DELETE") return handleAdminQuizDelete(request, env, url);
+  if (pathname === "/api/admin/quizzes/delete-preview" && method === "GET") return handleAdminQuizDeletePreview(request, env, url);
+  if (pathname === "/api/admin/quizzes/export" && method === "GET") return handleAdminQuizExport(request, env, url);
+  if (pathname === "/api/admin/quizzes/permanent-delete" && method === "POST") return handleAdminQuizPermanentDelete(request, env);
   if (pathname === "/api/admin/quizzes/visibility" && method === "POST") return handleAdminQuizVisibility(request, env);
   if (pathname === "/api/admin/quizzes/images" && method === "POST") return handleAdminQuizImagesSave(request, env);
 
@@ -4103,11 +4106,26 @@ async function readQuizGate(env, session) {
   return gate && gate.expiresAt > Date.now() ? gate : null;
 }
 
-async function readQuestionFeedback(env, questionIds) {
-  const deletedSubjects = new Set(await readConfigJson(env, "deleted_subjects", []));
+async function readQuestionFeedback(env, questionIds, prefetchedMap) {
+  const uniqueKeys = [];
+  const seenKeys = new Set();
+  for (const id of questionIds) {
+    const [subject, , quiz] = id.split("::");
+    const key = subject + "::" + quiz;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueKeys.push(key);
+    }
+  }
+  const neededConfigKeys = ["deleted_subjects", "deleted_quizzes", "hidden_quizzes"];
+  for (const key of uniqueKeys) {
+    neededConfigKeys.push("custom_quiz_key:" + key, "custom_quiz:" + key);
+  }
+  const configMap = prefetchedMap || await readConfigJsonBatch(env, neededConfigKeys);
+  const deletedSubjects = new Set(Array.isArray(configMap.deleted_subjects) ? configMap.deleted_subjects : []);
   const blocked = new Set([
-    ...await readConfigJson(env, "deleted_quizzes", []),
-    ...await readConfigJson(env, "hidden_quizzes", []),
+    ...(Array.isArray(configMap.deleted_quizzes) ? configMap.deleted_quizzes : []),
+    ...(Array.isArray(configMap.hidden_quizzes) ? configMap.hidden_quizzes : []),
   ]);
   const collections = new Map();
   const feedback = Object.create(null);
@@ -4116,8 +4134,8 @@ async function readQuestionFeedback(env, questionIds) {
     const key = subject + "::" + quiz;
     if (deletedSubjects.has(subject) || blocked.has(key)) continue;
     if (!collections.has(key)) {
-      const custom = await readConfigJson(env, "custom_quiz_key:" + key, null);
-      const customQuiz = custom && await readConfigJson(env, "custom_quiz:" + key, null);
+      const custom = configMap["custom_quiz_key:" + key] || null;
+      const customQuiz = custom ? (configMap["custom_quiz:" + key] || null) : null;
       collections.set(key, { key: custom || getCollection(subject, quiz), quiz: customQuiz });
     }
     const entry = collections.get(key);
@@ -4138,12 +4156,80 @@ async function readQuestionFeedback(env, questionIds) {
   return feedback;
 }
 
+function withServerTiming(response, dbMs, totalMs) {
+  const headers = new Headers(response.headers);
+  headers.set("Server-Timing", `db;dur=${dbMs.toFixed(2)}, total;dur=${totalMs.toFixed(2)}`);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 async function handleQuizFeedback(request, env) {
-  const session = await getUserSession(request, env);
-  if (!session) return fail(401, "Sign in to use online quiz feedback.", "AUTH_REQUIRED");
+  const reqStart = Date.now();
   const parsed = await readJson(request);
   if (parsed.tooLarge) return fail(413, "Request too large.", "TOO_LARGE");
   const body = parsed.body;
+  const action = body && body.action;
+
+  // Fast single-round-trip path for Study & Practice feedback (most latency-sensitive student action)
+  if ((action === "study" || action === "practice") && env && env.DB) {
+    const token = bearerToken(request);
+    if (!token) return fail(401, "Sign in to use online quiz feedback.", "AUTH_REQUIRED");
+    if (action === "practice" && !/^[A-Za-z0-9]{1,4}$/.test(String(body.selectedOptionId || ""))) {
+      return fail(400, "Select an answer before opening practice feedback.", "ANSWER_REQUIRED");
+    }
+    const questionId = String(body.questionId || "");
+    if (!isQuizQuestionId(questionId)) {
+      return fail(400, "Invalid question.", "BAD_REQUEST");
+    }
+    const [subject, , quiz] = questionId.split("::");
+    const compositeKey = subject + "::" + quiz;
+    const tokenHash = await sha256Hex(token);
+    const now = Date.now();
+    const dbStart = Date.now();
+    const res = await env.DB.prepare(
+      "SELECT '__session__' AS k, json_object('studentId', u.student_id, 'username', u.username) AS v " +
+      "FROM user_sessions us JOIN users u ON u.student_id = us.student_id WHERE us.token_hash = ?1 AND us.expires_at > ?2 " +
+      "UNION ALL " +
+      "SELECT config_key AS k, config_json AS v FROM admin_config WHERE config_key IN (?3, ?4, ?5, ?6, ?7) " +
+      "OR config_key = ('quiz_active_test:' || (SELECT student_id FROM user_sessions WHERE token_hash = ?1 AND expires_at > ?2 LIMIT 1))"
+    ).bind(
+      tokenHash,
+      now,
+      "deleted_subjects",
+      "deleted_quizzes",
+      "hidden_quizzes",
+      "custom_quiz_key:" + compositeKey,
+      "custom_quiz:" + compositeKey
+    ).all();
+    const dbMs = Date.now() - dbStart;
+    const rows = (res && Array.isArray(res.results)) ? res.results : [];
+    let sessionRow = null;
+    const configMap = Object.create(null);
+    let rawGate = null;
+    for (const row of rows) {
+      if (!row || !row.k || !row.v) continue;
+      try {
+        const parsedVal = JSON.parse(row.v);
+        if (row.k === "__session__") sessionRow = parsedVal;
+        else if (row.k.startsWith("quiz_active_test:")) rawGate = { key: row.k, value: parsedVal };
+        else configMap[row.k] = parsedVal;
+      } catch (_e) { /* ignore malformed entry */ }
+    }
+    if (!sessionRow || !sessionRow.studentId) {
+      return withServerTiming(fail(401, "Sign in to use online quiz feedback.", "AUTH_REQUIRED"), dbMs, Date.now() - reqStart);
+    }
+    const gate = rawGate && rawGate.key === ("quiz_active_test:" + sessionRow.studentId) ? rawGate.value : null;
+    if (gate && gate.expiresAt > now && !gate.finished) {
+      return withServerTiming(fail(403, "Finish your active Test before opening study feedback.", "TEST_FEEDBACK_LOCKED"), dbMs, Date.now() - reqStart);
+    }
+    const feedback = await readQuestionFeedback(env, [questionId], configMap);
+    if (!Object.hasOwn(feedback, questionId)) {
+      return withServerTiming(fail(404, "Question not available.", "UNKNOWN_QUESTION"), dbMs, Date.now() - reqStart);
+    }
+    return withServerTiming(jsonResponse({ ok: true, feedback }), dbMs, Date.now() - reqStart);
+  }
+
+  const session = await getUserSession(request, env);
+  if (!session) return fail(401, "Sign in to use online quiz feedback.", "AUTH_REQUIRED");
   const gate = await readQuizGate(env, session);
   const activeTest = gate && !gate.finished;
   const attemptId = safeId(body.attemptId, 80);
@@ -4187,19 +4273,7 @@ async function handleQuizFeedback(request, env) {
     return jsonResponse({ ok: true, feedback: await readQuestionFeedback(env, gate.questionIds || []) });
   }
   if (activeTest) return fail(403, "Finish your active Test before opening study feedback.", "TEST_FEEDBACK_LOCKED");
-  if (body.action !== "study" && body.action !== "practice") {
-    return fail(400, "Unknown quiz feedback action.", "BAD_REQUEST");
-  }
-  if (body.action === "practice" && !/^[A-Za-z0-9]{1,4}$/.test(String(body.selectedOptionId || ""))) {
-    return fail(400, "Select an answer before opening practice feedback.", "ANSWER_REQUIRED");
-  }
-  const questionId = String(body.questionId || "");
-  if (!isQuizQuestionId(questionId)) {
-    return fail(400, "Invalid question.", "BAD_REQUEST");
-  }
-  const feedback = await readQuestionFeedback(env, [questionId]);
-  if (!Object.hasOwn(feedback, questionId)) return fail(404, "Question not available.", "UNKNOWN_QUESTION");
-  return jsonResponse({ ok: true, feedback });
+  return fail(400, "Unknown quiz feedback action.", "BAD_REQUEST");
 }
 
 async function handleQuizSubmit(request, env) {
@@ -4726,6 +4800,24 @@ async function readConfigJson(env, configKey, fallback) {
     if (row && row.config_json) return JSON.parse(row.config_json);
   } catch (_e) { /* return fallback */ }
   return fallback;
+}
+
+async function readConfigJsonBatch(env, keys) {
+  const map = Object.create(null);
+  const unique = Array.from(new Set((Array.isArray(keys) ? keys : []).filter(Boolean)));
+  if (!unique.length || !env || !env.DB) return map;
+  try {
+    const placeholders = unique.map((_, idx) => "?" + (idx + 1)).join(", ");
+    const res = await env.DB.prepare("SELECT config_key, config_json FROM admin_config WHERE config_key IN (" + placeholders + ")")
+      .bind(...unique)
+      .all();
+    const rows = (res && Array.isArray(res.results)) ? res.results : [];
+    for (const row of rows) {
+      if (!row || !row.config_key || !row.config_json) continue;
+      try { map[row.config_key] = JSON.parse(row.config_json); } catch (_e) { /* ignore malformed */ }
+    }
+  } catch (_e) { /* return partial/empty map */ }
+  return map;
 }
 
 async function writeConfigJson(env, configKey, value) {
@@ -5327,6 +5419,261 @@ async function handleAdminQuizDelete(request, env, url) {
   ]);
 
   return jsonResponse({ ok: true, deleted: true, subjectId, quizId });
+}
+
+async function inspectQuizForDeletion(env, subjectId, quizId) {
+  const compositeKey = subjectId + "::" + quizId;
+  const cfg = await readConfigJsonBatch(env, [
+    "custom_quiz:" + compositeKey,
+    "custom_quiz_key:" + compositeKey,
+    "custom_quizzes_index",
+    "quiz_name_overrides",
+    "deleted_quizzes",
+    "hidden_quizzes",
+    "quiz_question_images"
+  ]);
+  const customQuiz = cfg["custom_quiz:" + compositeKey] || null;
+  const customKey = cfg["custom_quiz_key:" + compositeKey] || null;
+  const customIndex = (cfg.custom_quizzes_index && typeof cfg.custom_quizzes_index === "object") ? cfg.custom_quizzes_index : {};
+  const quizNames = (cfg.quiz_name_overrides && typeof cfg.quiz_name_overrides === "object") ? cfg.quiz_name_overrides : {};
+  const deletedQuizzes = Array.isArray(cfg.deleted_quizzes) ? cfg.deleted_quizzes : [];
+  const hiddenQuizzes = Array.isArray(cfg.hidden_quizzes) ? cfg.hidden_quizzes : [];
+  const qImagesAll = (cfg.quiz_question_images && typeof cfg.quiz_question_images === "object") ? cfg.quiz_question_images : {};
+
+  const bundledCol = getCollection(subjectId, quizId);
+  const hasCustom = Boolean(customQuiz || customKey || Object.prototype.hasOwnProperty.call(customIndex, compositeKey));
+  const isBundled = Boolean(bundledCol);
+  const storageType = isBundled
+    ? (hasCustom ? "bundled_with_override" : "bundled_static")
+    : (hasCustom ? "custom_d1" : "not_found");
+  const alreadyDeleted = deletedQuizzes.indexOf(compositeKey) !== -1 && !hasCustom;
+  const isHidden = hiddenQuizzes.indexOf(compositeKey) !== -1;
+
+  const attemptsRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM quiz_attempts WHERE subject_id = ?1 AND quiz_id = ?2").bind(subjectId, quizId).first();
+  const scoresRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM best_scores WHERE subject_id = ?1 AND quiz_id = ?2").bind(subjectId, quizId).first();
+  const reportsRow = await env.DB.prepare("SELECT COUNT(*) AS n FROM question_reports WHERE subject_id = ?1 AND quiz_id = ?2").bind(subjectId, quizId).first();
+
+  const indexMeta = customIndex[compositeKey] || null;
+  const title = (typeof quizNames[compositeKey] === "string" && quizNames[compositeKey])
+    || (indexMeta && indexMeta.title)
+    || (customQuiz && customQuiz.title)
+    || quizId;
+  const questionCount = (customQuiz && Array.isArray(customQuiz.questions) && customQuiz.questions.length)
+    || (indexMeta && Number(indexMeta.questionCount))
+    || (bundledCol && bundledCol.answers ? Object.keys(bundledCol.answers).length + ((bundledCol.ungradableIds && bundledCol.ungradableIds.length) || 0) : 0);
+
+  return {
+    compositeKey,
+    subjectId,
+    quizId,
+    title,
+    storageType,
+    isBundled,
+    hasCustom,
+    exists: storageType !== "not_found" && !alreadyDeleted,
+    alreadyDeleted,
+    isHidden,
+    questionCount,
+    customQuiz,
+    customKey,
+    bundledCol,
+    customIndex,
+    quizNames,
+    deletedQuizzes,
+    hiddenQuizzes,
+    qImagesAll,
+    counts: {
+      quizAttempts: Number(attemptsRow && attemptsRow.n) || 0,
+      bestScores: Number(scoresRow && scoresRow.n) || 0,
+      questionReports: Number(reportsRow && reportsRow.n) || 0
+    }
+  };
+}
+
+async function handleAdminQuizDeletePreview(request, env, url) {
+  const gate = await requireMasterAdmin(request, env);
+  if (!gate.ok) return gate.response;
+  const subjectId = safeId(url.searchParams.get("subjectId"), 64);
+  const quizId = safeId(url.searchParams.get("quizId") || url.searchParams.get("id"), 80);
+  if (!subjectId || !quizId || subjectId.includes("*") || quizId.includes("*")) {
+    return fail(400, "Exact subjectId and quizId are required.", "BAD_REQUEST");
+  }
+  const info = await inspectQuizForDeletion(env, subjectId, quizId);
+  return jsonResponse({
+    ok: true,
+    preview: {
+      subjectId: info.subjectId,
+      quizId: info.quizId,
+      title: info.title,
+      storageType: info.storageType,
+      exists: info.exists,
+      alreadyDeleted: info.alreadyDeleted,
+      isHidden: info.isHidden,
+      questionCount: info.questionCount,
+      requiredConfirmation: "DELETE " + info.quizId,
+      willDelete: {
+        authoritativeContent: info.hasCustom ? "D1 custom quiz record (custom_quiz)" : (info.isBundled ? "Authoritative removal tombstone (deleted_quizzes) blocking bundled quiz delivery & grading" : "None"),
+        answerKey: Boolean(info.customKey || info.isBundled),
+        customIndexEntry: Object.prototype.hasOwnProperty.call(info.customIndex, info.compositeKey),
+        nameOverride: Object.prototype.hasOwnProperty.call(info.quizNames, info.compositeKey),
+        questionImages: Object.prototype.hasOwnProperty.call(info.qImagesAll, info.compositeKey),
+        hiddenFlag: info.isHidden,
+        openReportsCount: info.counts.questionReports
+      },
+      willPreserve: {
+        studentIdentities: true,
+        quizAttemptsCount: info.counts.quizAttempts,
+        bestScoresCount: info.counts.bestScores
+      },
+      staticAssetNote: info.isBundled
+        ? "This quiz is bundled in deployed static JSON assets. Runtime permanent deletion immediately blocks student delivery, feedback, and grading via D1 tombstone and removes all D1 overrides/reports. To also strip its source from the static bundle, run: node tools/remove-bundled-quiz.js " + info.subjectId + " " + info.quizId + " and redeploy."
+        : null
+    }
+  });
+}
+
+async function handleAdminQuizExport(request, env, url) {
+  const gate = await requireMasterAdmin(request, env);
+  if (!gate.ok) return gate.response;
+  const subjectId = safeId(url.searchParams.get("subjectId"), 64);
+  const quizId = safeId(url.searchParams.get("quizId") || url.searchParams.get("id"), 80);
+  if (!subjectId || !quizId) return fail(400, "Valid subjectId and quizId are required.", "BAD_REQUEST");
+  const info = await inspectQuizForDeletion(env, subjectId, quizId);
+  if (!info.exists && !info.hasCustom && !info.isBundled) {
+    return fail(404, "Quiz not found for backup export.", "NOT_FOUND");
+  }
+  const bundledAnswerEntries = {};
+  if (info.bundledCol && info.bundledCol.answers) {
+    for (const qid of Object.keys(info.bundledCol.answers)) {
+      bundledAnswerEntries[qid] = {
+        correctOptionId: info.bundledCol.answers[qid],
+        explanation: bundledExplanations[qid] || null
+      };
+    }
+  }
+  const payload = {
+    schemaVersion: "elgo-quiz-backup-v1",
+    exportedAt: new Date().toISOString(),
+    subjectId: info.subjectId,
+    quizId: info.quizId,
+    title: info.title,
+    storageType: info.storageType,
+    isHidden: info.isHidden,
+    customQuiz: info.customQuiz,
+    customAnswerKey: info.customKey,
+    bundledAnswerKey: info.isBundled ? {
+      answers: bundledAnswerEntries,
+      ungradableIds: info.bundledCol.ungradableIds || []
+    } : null,
+    nameOverride: info.quizNames[info.compositeKey] || null,
+    questionImages: info.qImagesAll[info.compositeKey] || null,
+    dependentRecords: info.counts
+  };
+  const safeFile = ("quiz-backup-" + subjectId + "-" + quizId).replace(/[^A-Za-z0-9._-]+/g, "_") + ".json";
+  return new Response(JSON.stringify(payload, null, 2), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": 'attachment; filename="' + safeFile + '"',
+      "Cache-Control": "no-store"
+    }
+  });
+}
+
+async function handleAdminQuizPermanentDelete(request, env) {
+  const gate = await requireMasterAdmin(request, env);
+  if (!gate.ok) return gate.response;
+  const frozenRes = await requireProgressWriteFenceClear(env);
+  if (frozenRes) return frozenRes;
+  const parsed = await readJson(request);
+  if (parsed.tooLarge) return fail(413, "Request too large.", "TOO_LARGE");
+  const body = parsed.body || {};
+  const subjectId = safeId(body.subjectId, 64);
+  const quizId = safeId(body.quizId || body.id, 80);
+  if (!subjectId || !quizId || subjectId.includes("*") || quizId.includes("*")) {
+    return fail(400, "Exact subjectId and quizId are required.", "BAD_REQUEST");
+  }
+  const expectedPhrase = "DELETE " + quizId;
+  if (body.confirmPermanent !== true || String(body.confirmText || "").trim() !== expectedPhrase) {
+    return fail(400, 'Explicit confirmation required. Type "' + expectedPhrase + '" to permanently delete this quiz.', "CONFIRMATION_REQUIRED");
+  }
+
+  const info = await inspectQuizForDeletion(env, subjectId, quizId);
+  if (!info.exists && !info.hasCustom && !info.isBundled) {
+    return fail(404, "Quiz not found.", "NOT_FOUND");
+  }
+
+  const upsertCfgStmt = (key, val) => env.DB.prepare(
+    "INSERT INTO admin_config (config_key, config_json, updated_at) SELECT ?1, ?2, datetime('now') WHERE " + SQL_WRITE_FENCE_PREDICATE +
+    " ON CONFLICT(config_key) DO UPDATE SET config_json = excluded.config_json, updated_at = datetime('now')"
+  ).bind(key, JSON.stringify(val));
+
+  const statements = [
+    env.DB.prepare("DELETE FROM admin_config WHERE config_key = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind("custom_quiz:" + info.compositeKey),
+    env.DB.prepare("DELETE FROM admin_config WHERE config_key = ?1 AND " + SQL_WRITE_FENCE_PREDICATE).bind("custom_quiz_key:" + info.compositeKey)
+  ];
+
+  if (Object.prototype.hasOwnProperty.call(info.customIndex, info.compositeKey)) {
+    const nextIndex = Object.assign({}, info.customIndex);
+    delete nextIndex[info.compositeKey];
+    statements.push(upsertCfgStmt("custom_quizzes_index", nextIndex));
+  }
+  if (Object.prototype.hasOwnProperty.call(info.quizNames, info.compositeKey)) {
+    const nextNames = Object.assign({}, info.quizNames);
+    delete nextNames[info.compositeKey];
+    statements.push(upsertCfgStmt("quiz_name_overrides", nextNames));
+  }
+  if (info.isBundled || body.isBundled === true || body.isBundled === "1") {
+    const nextDeleted = info.deletedQuizzes.slice();
+    if (nextDeleted.indexOf(info.compositeKey) === -1) nextDeleted.push(info.compositeKey);
+    statements.push(upsertCfgStmt("deleted_quizzes", nextDeleted));
+  }
+  if (info.isHidden) {
+    const nextHidden = info.hiddenQuizzes.filter((k) => k !== info.compositeKey);
+    statements.push(upsertCfgStmt("hidden_quizzes", nextHidden));
+  }
+  if (Object.prototype.hasOwnProperty.call(info.qImagesAll, info.compositeKey)) {
+    const nextImages = Object.assign({}, info.qImagesAll);
+    delete nextImages[info.compositeKey];
+    statements.push(upsertCfgStmt("quiz_question_images", nextImages));
+  }
+
+  // Clean up orphaned question reports only; NEVER cascade into historical quiz_attempts or best_scores!
+  statements.push(
+    env.DB.prepare("DELETE FROM question_reports WHERE subject_id = ?1 AND quiz_id = ?2 AND " + SQL_WRITE_FENCE_PREDICATE).bind(subjectId, quizId)
+  );
+
+  // Record minimal administrative audit trail (capped rolling log of last 100 deletions)
+  const existingAudit = await readConfigJson(env, "admin_quiz_delete_audit", []);
+  const auditEntry = {
+    deletedAt: new Date().toISOString(),
+    subjectId: info.subjectId,
+    quizId: info.quizId,
+    title: info.title,
+    storageType: info.storageType,
+    actorKind: "master",
+    backupExported: Boolean(body.backupExported),
+    preservedAttempts: info.counts.quizAttempts,
+    preservedBestScores: info.counts.bestScores,
+    clearedReports: info.counts.questionReports
+  };
+  const nextAudit = (Array.isArray(existingAudit) ? existingAudit.slice(-99) : []).concat([auditEntry]);
+  statements.push(upsertCfgStmt("admin_quiz_delete_audit", nextAudit));
+
+  await env.DB.batch(statements);
+
+  return jsonResponse({
+    ok: true,
+    permanentlyDeleted: true,
+    subjectId: info.subjectId,
+    quizId: info.quizId,
+    storageType: info.storageType,
+    preserved: {
+      quizAttempts: info.counts.quizAttempts,
+      bestScores: info.counts.bestScores
+    },
+    audit: auditEntry
+  });
 }
 
 async function handleAdminQuizVisibility(request, env) {

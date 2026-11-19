@@ -809,11 +809,11 @@
                     <div class="admin-row-actions">
                       <button type="button" class="secondary" data-quiz-preview="${esc(quizId)}">Preview Qs</button>
                       <button type="button" class="secondary" data-quiz-images="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}">Images</button>
-                      <button type="button" class="secondary" data-quiz-toggle-hide="${esc(quizId)}" data-next-hidden="${isHidden ? "0" : "1"}">${isHidden ? "Show" : "Hide"}</button>
+                      <button type="button" class="secondary" data-quiz-toggle-hide="${esc(quizId)}" data-next-hidden="${isHidden ? "0" : "1"}" title="Reversibly hide or publish this quiz without deleting content">${isHidden ? "Publish" : "Hide / Unpublish"}</button>
                       <button type="button" class="secondary" data-quiz-rename="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}" data-quiz-custom="${src.isCustom ? "1" : "0"}">Edit / Rename</button>
                       ${isMaster
-                        ? `<button type="button" class="admin-btn-danger" data-quiz-delete="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}" data-quiz-custom="${src.isCustom ? "1" : "0"}">Delete</button>`
-                        : `<span class="admin-badge" title="Master Admin session required to delete a quiz">Owner only</span>`}
+                        ? `<button type="button" class="admin-btn-danger" data-quiz-delete="${esc(quizId)}" data-quiz-title="${esc(state.getQuizTitle(src, currentSubj.id))}" data-quiz-custom="${src.isCustom ? "1" : "0"}">Permanently Delete</button>`
+                        : `<span class="admin-badge" title="Master Admin session required to permanently delete a quiz">Owner only</span>`}
                     </div>
                   </div>
                 `;
@@ -1197,31 +1197,108 @@
           const quizId = btn.getAttribute("data-quiz-delete");
           const qTitle = btn.getAttribute("data-quiz-title");
           const isBundled = btn.getAttribute("data-quiz-custom") !== "1";
-          const ok = await confirmModal({
-            title: "Delete Quiz?",
-            message: `Permanently delete "${qTitle}" (${quizId}), its leaderboard best scores, and question reports from ${state.getSubjectName(currentSubj)}? Student attempt history is kept.`,
-            confirmLabel: "Delete Quiz",
-            danger: true,
-          });
-          if (!ok) return;
-          const delQs = new URLSearchParams({
-            subjectId: currentSubj.id,
-            quizId,
-            isBundled: isBundled ? "1" : "0",
-          });
-          const { res, data } = await apiFetch(`/api/admin/quizzes?${delQs.toString()}`, {
-            method: "DELETE",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ subjectId: currentSubj.id, quizId, isBundled }),
-          });
-          if (!res.ok || !data || !data.ok) {
-            if (handleMasterAuthFailure(res, data)) return;
-            toast((data && data.error) || "Could not delete quiz.");
+          const qs = new URLSearchParams({ subjectId: currentSubj.id, quizId });
+          btn.disabled = true;
+          const { res: prevRes, data: prevData } = await apiFetch(`/api/admin/quizzes/delete-preview?${qs.toString()}`);
+          btn.disabled = false;
+          if (!prevRes.ok || !prevData || !prevData.ok || !prevData.preview) {
+            if (handleMasterAuthFailure(prevRes, prevData)) return;
+            toast((prevData && prevData.error) || "Could not load permanent deletion preview.");
             return;
           }
-          await syncCatalog();
-          toast("Quiz deleted.");
-          renderCoursesTab(body);
+          const p = prevData.preview;
+          const reqPhrase = p.requiredConfirmation || `DELETE ${quizId}`;
+          let backupExported = false;
+
+          openModal({
+            title: `Permanently Delete Quiz — ${qTitle}`,
+            html: `
+              <form id="permDeleteQuizForm" class="dialog-body" style="padding:0;gap:12px;">
+                <p style="margin:0;color:var(--danger);font-weight:700;font-size:0.9rem;">
+                  This is a permanent, destructive removal (unlike Hide / Unpublish, which is reversible).
+                </p>
+                <div class="admin-card" style="padding:12px;gap:6px;">
+                  <div><strong>Target:</strong> ${esc(p.title)} (<code>${esc(p.subjectId)} :: ${esc(p.quizId)}</code>)</div>
+                  <div><strong>Storage:</strong> <code>${esc(p.storageType)}</code> · ${Number(p.questionCount || 0)} questions</div>
+                  <div><strong>Will Permanently Remove:</strong> ${esc(p.willDelete.authoritativeContent)}${p.willDelete.answerKey ? ", answer key" : ""}${p.willDelete.nameOverride ? ", name override" : ""}${p.willDelete.questionImages ? ", image overlays" : ""}${p.willDelete.openReportsCount ? `, ${p.willDelete.openReportsCount} question report(s)` : ""}.</div>
+                  <div style="color:var(--success);"><strong>Will Preserve Safely:</strong> Student accounts, ${Number(p.willPreserve.quizAttemptsCount || 0)} historical quiz attempt(s), and ${Number(p.willPreserve.bestScoresCount || 0)} historical score record(s).</div>
+                  ${p.staticAssetNote ? `<div style="font-size:0.82rem;color:var(--muted);border-top:1px dashed var(--line);padding-top:6px;"><strong>Static Bundle Note:</strong> ${esc(p.staticAssetNote)}</div>` : ""}
+                </div>
+                <div class="inline" style="justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                  <span style="font-size:0.84rem;color:var(--muted);">Recommended before deleting:</span>
+                  <button type="button" class="secondary" id="permDeleteExportBtn">⬇ Download Backup JSON</button>
+                </div>
+                <label class="admin-field">
+                  <span>Type <code>${esc(reqPhrase)}</code> to confirm permanent deletion:</span>
+                  <input type="text" id="permDeleteConfirmInput" autocomplete="off" placeholder="${esc(reqPhrase)}" required>
+                </label>
+                <div class="inline" style="justify-content:flex-end;">
+                  <button type="button" class="secondary" data-modal-close>Cancel</button>
+                  <button type="submit" class="admin-btn-danger" id="permDeleteSubmitBtn" disabled>Permanently Delete Quiz</button>
+                </div>
+              </form>
+            `,
+            onMount: (dlg) => {
+              const input = dlg.querySelector("#permDeleteConfirmInput");
+              const submitBtn = dlg.querySelector("#permDeleteSubmitBtn");
+              const exportBtn = dlg.querySelector("#permDeleteExportBtn");
+              input.addEventListener("input", () => {
+                submitBtn.disabled = input.value.trim() !== reqPhrase;
+              });
+              exportBtn.addEventListener("click", async () => {
+                exportBtn.disabled = true;
+                try {
+                  const expRes = await fetch(`/api/admin/quizzes/export?${qs.toString()}`, {
+                    credentials: "same-origin",
+                    headers: state.authHeaders({}),
+                  });
+                  if (!expRes.ok) {
+                    toast("Could not export quiz backup.");
+                    return;
+                  }
+                  const blob = await expRes.blob();
+                  const a = document.createElement("a");
+                  a.href = URL.createObjectURL(blob);
+                  a.download = `quiz-backup-${currentSubj.id}-${quizId}.json`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
+                  backupExported = true;
+                  exportBtn.textContent = "✓ Backup Downloaded";
+                } finally {
+                  exportBtn.disabled = false;
+                }
+              });
+              dlg.querySelector("#permDeleteQuizForm").addEventListener("submit", async (e) => {
+                e.preventDefault();
+                if (input.value.trim() !== reqPhrase) return;
+                submitBtn.disabled = true;
+                const { res, data } = await apiFetch("/api/admin/quizzes/permanent-delete", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    subjectId: currentSubj.id,
+                    quizId,
+                    isBundled,
+                    confirmPermanent: true,
+                    confirmText: input.value.trim(),
+                    backupExported,
+                  }),
+                });
+                if (!res.ok || !data || !data.ok) {
+                  submitBtn.disabled = false;
+                  if (handleMasterAuthFailure(res, data)) return;
+                  toast((data && data.error) || "Could not permanently delete quiz.");
+                  return;
+                }
+                dlg.close();
+                await syncCatalog();
+                toast("Quiz permanently deleted. Historical student attempts & scores were preserved.");
+                renderCoursesTab(body);
+              });
+            },
+          });
         });
       });
     }
